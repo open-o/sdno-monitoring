@@ -5,7 +5,7 @@ from jsonrpc import *
 import time
 from microsrvurl import *
 from common import  *
-
+import copy
 
 class topo_fetcher(object):
     def __init__(self):
@@ -14,6 +14,7 @@ class topo_fetcher(object):
         self.port_map = {}
         self.vlink_map = {}
         self.vlinks = []
+        self.simple_vlinks = []
 
         #timestamp for last fetch.
         self.last_equip_ts = 0
@@ -23,9 +24,9 @@ class topo_fetcher(object):
 
         self.brs = None
 
-        self.brs_equip_key_map = {'id':'uid', 'name':'name', 'ipAddress':'ip_str'}
+        self.brs_equip_key_map = {'id':'uid', 'name':'name', 'ipAddress':'ip_str', 'manufacturer':'vendor'}
         self.brs_port_key_map = {'id':'uid', 'ipAddress':'ip_str', 'macAddress':'mac',
-                                 'phyBW':'capacity','portIndex':'if_index'}
+                                 'phyBW':'capacity','portIndex':'if_index', 'name':'if_name'}
         self.brs_link_key_map = {'id':'uid', 'aEnd':'sport', 'zEnd':'dport','phyBW':'bandwidth'}
 
         pass
@@ -165,6 +166,7 @@ class topo_fetcher(object):
                     vlinks.append(v)
                     pass
                 fetched = 1
+                self.vlink_modified = 1
             except:
                 pass
 
@@ -186,6 +188,9 @@ class topo_fetcher(object):
 
 
         self.vlinks = vlinks
+        for v in vlinks:
+            cv = copy.copy(v)
+            self.simple_vlinks.append(cv)
 
         # fill the vlink with its equipment and physical port info. Will be used for link utilization fetch.
         lmap = {}

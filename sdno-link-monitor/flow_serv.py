@@ -77,7 +77,7 @@ class flow_handler(tornado.web.RequestHandler):
         return resp
 
     def flow_subreq(self, req):
-        if 'args' not in req or 'equip_uid' not in req['args']:
+        if 'args' not in req:
             return None
 
         # No need to specify url. we do not use the base_rpc for real request.
@@ -159,8 +159,8 @@ class flow_handler(tornado.web.RequestHandler):
             ipl = {}
 
             for one_flow in flow:
-                if 'sip_str' in one_flow:
-                    ipl[one_flow['sip_str']] = 0
+                if 'src' in one_flow:
+                    ipl[one_flow['src']] = 0
                 pass
 
             args['ips'] = ipl.keys()
@@ -179,9 +179,9 @@ class flow_handler(tornado.web.RequestHandler):
 
             ip_cust_map = cust_resp['result']
             for one_flow in flow:
-                if 'sip_str' not in one_flow:
+                if 'src' not in one_flow:
                     continue
-                sip = one_flow['sip_str']
+                sip = one_flow['src']
                 if sip in ip_cust_map:
                     a_cust = ip_cust_map[sip]
                     one_flow['customer'] = a_cust['name']
@@ -192,24 +192,24 @@ class flow_handler(tornado.web.RequestHandler):
             flow = self.accum_flow(flow)
 
             # Get flow's LSP information
-            args = {'cust_uids':flow.keys()}
-            rpc.form_request('ms_tunnel_get_lsp_by_cust', args)
-            req_body = json.dumps(rpc.request_body)
-
-            http_req = tornado.httpclient.HTTPRequest(microsrv_tunnel_url ,method='POST', body = req_body)
-            client = tornado.httpclient.AsyncHTTPClient()
-            lsp_resp = yield tornado.gen.Task(client.fetch, http_req)
-
-            try:
-                lsp_resp = json.loads(lsp_resp.body)
-                if 'err_code' in lsp_resp and int(lsp_resp['err_code']) == 0 \
-                        and 'result' in lsp_resp :
-                    cust_lsp = lsp_resp['result']
-                    for cust in cust_lsp:
-                        if cust in flow:
-                            flow[cust]['lsps'] = cust_lsp[cust]
-            except:
-                pass
+            # args = {'cust_uids':flow.keys()}
+            # rpc.form_request('ms_tunnel_get_lsp_by_cust', args)
+            # req_body = json.dumps(rpc.request_body)
+            #
+            # http_req = tornado.httpclient.HTTPRequest(microsrv_tunnel_url ,method='POST', body = req_body)
+            # client = tornado.httpclient.AsyncHTTPClient()
+            # lsp_resp = yield tornado.gen.Task(client.fetch, http_req)
+            #
+            # try:
+            #     lsp_resp = json.loads(lsp_resp.body)
+            #     if 'err_code' in lsp_resp and int(lsp_resp['err_code']) == 0 \
+            #             and 'result' in lsp_resp :
+            #         cust_lsp = lsp_resp['result']
+            #         for cust in cust_lsp:
+            #             if cust in flow:
+            #                 flow[cust]['lsps'] = cust_lsp[cust]
+            # except:
+            #     pass
 
             if self.rest == 0:
                 resp['err_code'] = 0
@@ -272,8 +272,10 @@ class flow_app(tornado.web.Application):
         }
 
         tornado.web.Application.__init__(self, handlers, **settings)
-        fet = fetch_thread()
-        fet.start()
+
+        # We don't need the topo fetcher now. The topo service will set the topo to ms_flow instead.
+        # fet = fetch_thread()
+        # fet.start()
         pass
 
 # Useless at this moment

@@ -15,6 +15,16 @@ from jsonrpc import base_rpc
 
 class base_handler(tornado.web.RequestHandler):
 
+
+    def map_obj_key(self, src, map):
+        dst = {}
+        for k in src:
+            if k in map:
+                dst[map[k]] = src[k]
+            else:
+                dst[k] = src[k]
+        return dst
+
     @tornado.gen.coroutine
     def do_query(self, url, request, args):
         resp = {'err_code':-1}
@@ -26,7 +36,7 @@ class base_handler(tornado.web.RequestHandler):
             http_req = tornado.httpclient.HTTPRequest(url, method='POST', body=req_body)
             client = tornado.httpclient.AsyncHTTPClient()
             resp = yield tornado.gen.Task(client.fetch, http_req)
-            print 'Response:\n' + resp.body
+            print 'Response:\n' + '' if resp.body is None else resp.body
             try:
                 resp = json.loads(resp.body)
             except:

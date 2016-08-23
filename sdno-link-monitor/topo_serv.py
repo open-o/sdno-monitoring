@@ -18,6 +18,8 @@ from tornado_swagger import swagger
 import datetime
 from common import *
 from flow_serv import flow_handler
+import os
+import os.path
 
 swagger.docs()
 
@@ -64,10 +66,14 @@ class fetch_thread(threading.Thread):
 
     def set_equips(self):
         'Set the routers data to who requires them. e.g. the controller micro service'
-        rpc = base_rpc(microsrv_controller_url)
+        # Set equip data to ms_controller. Moved to sync_lsp of lsp_serv.py
+
+        # Set equip and link data to ms_flow
+        rpc = base_rpc(microsrv_flow_url)
         args = {}
         args['equips'] = self.fetcher.equips
-        rpc.form_request('ms_controller_set_equips', args)
+        args['vlinks'] = self.fetcher.simple_vlinks
+        rpc.form_request('ms_flow_set_topo', args)
         r = rpc.do_sync_post()
 
         pass
@@ -148,11 +154,11 @@ class fetch_thread(threading.Thread):
                 self.fetcher.fetch_equip()
                 self.fetcher.fetch_port()
                 self.fetcher.fetch_vlink()
-                self.set_link_list()
-                self.set_equips()
                 self.form_equip_model()
                 self.fetch_link_status()
                 self.form_vlink_model()
+                self.set_link_list()
+                self.set_equips()
                 last_topo_tm = tm
                 last_link_tm = tm
                 self.app.switch_equip()
@@ -347,7 +353,7 @@ class flow_rest_handler(flow_handler):
         """
             @param node_uid:
             @type node_uid: L{string}
-            @in node_uid: query
+            @in node_uid: path
             @required node_uid: True
 
             @rtype: map of {vsite_name:flow_information}
@@ -370,10 +376,16 @@ class flow_rest_handler(flow_handler):
 
 class swagger_app(swagger.Application):
     def __init__(self, topo_app):
-        handlers = [(r'/openoapi/sdno-link_flow_monitor/v1/vlinks', vlink_handler),
-                    (r'/openoapi/sdno-link_flow_monitor/v1/flows/(.+)', flow_rest_handler)]
+        settings = {
+            'static_path': os.path.join(os.path.dirname(__file__), 'sdno-link-monitor.swagger')
+        }
 
-        super(swagger_app, self).__init__(handlers)
+        handlers = [(r'/openoapi/sdno-link-monitor/v1/vlinks', vlink_handler),
+                    (r'/openoapi/sdno-link-monitor/v1/flows/(.+)', flow_rest_handler),
+                    (r'/openoapi/sdno-link-monitor/v1/(swagger.json)', tornado.web.StaticFileHandler, dict(path=settings['static_path']))
+        ]
+
+        super(swagger_app, self).__init__(handlers, **settings)
         self.topo_app = topo_app
         self.vlink_attrib_map = {'dequip':'ingress_node_uid', 'sequip':'egress_node_uid',
                                  'dport':'ingress_port_uid', 'sport':'egress_port_uid', 'bandwidth':'bandwidth',
