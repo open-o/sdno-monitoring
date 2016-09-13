@@ -15,3 +15,25 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+
+import threading
+
+### ###########################################################
+# Decorator to threading lock a function
+#
+
+
+class locktan(object):
+    lock = threading.RLock()
+
+    def __call__(self, fn):
+        def lockfn(*args, **kwargs):
+            locktan.lock.acquire()
+            try:
+                result = fn(*args, **kwargs)
+            except:
+                raise
+            finally:
+                locktan.lock.release()
+            return result
+        return lockfn

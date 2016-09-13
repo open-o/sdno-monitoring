@@ -15,3 +15,17 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+
+import threading
+
+
+class DeferDo(threading.Thread):
+
+    def __init__(self, defer, cookie=None):
+        threading.Thread.__init__(self)
+        self.defer = defer
+        self.cookie = cookie
+        self.start()
+
+    def run(self):
+        self.defer(self.cookie)

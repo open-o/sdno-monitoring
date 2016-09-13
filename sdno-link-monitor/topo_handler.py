@@ -1,7 +1,21 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+#
+#  Copyright (c) 2016, China Telecommunication Co., Ltd.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
 
-__author__ = 'pzhang'
 
 import tornado.web
 import json
@@ -14,7 +28,7 @@ class ms_topo_handler(tornado.web.RequestHandler):
         super(ms_topo_handler, self).initialize()
         self.resp_func = {'ms_topo_get_equip': self.get_equips, 'ms_topo_get_ports':self.get_ports, \
                       'ms_topo_get_vlink': self.get_vlinks, 'ms_topo_update_equip':self.update_equip}
-        self.log = 1
+        self.log = 0
         pass
 
     def form_response(self, req):
@@ -24,7 +38,7 @@ class ms_topo_handler(tornado.web.RequestHandler):
         resp['ts'] = time.strftime("%Y%m%d%H%M%S")
         resp['trans_id'] = req['trans_id']
         resp['err_code'] = 0
-        resp['msg'] = 'Demo response'
+        resp['msg'] = ''
         self.set_header('Content-Type', 'application/json')
         return resp
     

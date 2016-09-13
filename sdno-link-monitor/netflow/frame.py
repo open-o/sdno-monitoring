@@ -15,3 +15,21 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+
+import sys
+
+### ###########################################################
+# Get frame with depth
+#
+
+
+def frame(depth=-1):
+    depth_all = 1
+    while True:
+        try:
+            sys._getframe(depth_all)
+            depth_all += 1
+        except:
+            break
+
+    return sys._getframe((depth_all + depth) % depth_all)
