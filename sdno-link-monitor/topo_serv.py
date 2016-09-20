@@ -7,7 +7,7 @@
 #  you may not use this file except in compliance with the License.
 #  You may obtain a copy of the License at
 #
-#  http://www.apache.org/licenses/LICENSE-2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 #  Unless required by applicable law or agreed to in writing, software
 #  distributed under the License is distributed on an "AS IS" BASIS,
@@ -198,7 +198,8 @@ class topo_handler(base_handler):
         super(topo_handler, self).initialize()
         self.resp_func = {'topo_man_get_equip': self.get_equips, 'topo_man_get_vlinks':self.get_vlinks,
                           'topo_man_get_topo':self.get_topo}
-        self.async_func = {'topo_man_update_equip':self.update_equip, 'topo_man_get_flow_by_equip':self.get_flow_by_equip}
+        self.async_func = {'topo_man_update_equip':self.update_equip, 'topo_man_get_flow_by_equip':self.get_flow_by_equip,
+                           'topo_man_set_vlink_delay':self.set_link_delay}
         self.log = 0
         pass
 
@@ -234,6 +235,12 @@ class topo_handler(base_handler):
     def update_equip(self,req):
         res = yield self.do_query(microsrv_topo_url, 'ms_topo_update_equip', req['args'])
         raise tornado.gen.Return(res)
+
+    @tornado.gen.coroutine
+    def set_link_delay(self, req):
+        res = yield self.do_query(microsrv_topo_url, 'ms_topo_set_vlink_delay', req['args'])
+        raise tornado.gen.Return(res)
+
 
     @tornado.gen.coroutine
     def get_flow_by_equip(self, req):

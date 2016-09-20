@@ -7,7 +7,7 @@
 #  you may not use this file except in compliance with the License.
 #  You may obtain a copy of the License at
 #
-#  http://www.apache.org/licenses/LICENSE-2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 #  Unless required by applicable law or agreed to in writing, software
 #  distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,7 +27,8 @@ class ms_topo_handler(tornado.web.RequestHandler):
     def initialize(self):
         super(ms_topo_handler, self).initialize()
         self.resp_func = {'ms_topo_get_equip': self.get_equips, 'ms_topo_get_ports':self.get_ports, \
-                      'ms_topo_get_vlink': self.get_vlinks, 'ms_topo_update_equip':self.update_equip}
+                      'ms_topo_get_vlink': self.get_vlinks, 'ms_topo_update_equip':self.update_equip, \
+                      'ms_topo_set_vlink_delay':self.set_vlink_delay}
         self.log = 0
         pass
 
@@ -128,7 +129,6 @@ class ms_topo_handler(tornado.web.RequestHandler):
         vls = []
 
         sql_str = 'select * from t_link'
-        print sql_str
         db = mysql_utils('topology')
         results = db.exec_sql(sql_str)
         db.close()
@@ -139,8 +139,22 @@ class ms_topo_handler(tornado.web.RequestHandler):
             v['sport'] = str(result[1])
             v['dport'] = str(result[2])
             v['bandwidth'] = result[4]
+            v['delay'] = result[6] if result[6] is not None and result[6] != '' else 0
             vls.append(v)
 
         vl['vlinks'] = vls
         return vl
+
+    def set_vlink_delay(self, arg):
+        ' args is {"vlinks":[{"uid":"xxx", "delay":123} ] }'
+        dlys = arg['vlinks']
+
+        db = mysql_utils('topology')
+        for d in dlys:
+            sqltxt = 'UPDATE t_link SET t_link.delay = %s WHERE t_link.id = %s' % (d['delay'], d['uid'])
+            db.exec_sql(sqltxt)
+        db.commit()
+        db.close()
+        return {}
+
 
