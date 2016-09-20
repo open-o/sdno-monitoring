@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # -*- coding: utf_8 -*-
 #
 #  Copyright (c) 2016, China Telecommunication Co., Ltd.
@@ -16,7 +16,20 @@
 #  limitations under the License.
 #
 
-try:
-    from klog import *
-except ImportError:
-    from plog import *
+import sys
+
+### ###########################################################
+# Get frame with depth
+#
+
+
+def frame(depth=-1):
+    depth_all = 1
+    while True:
+        try:
+            sys._getframe(depth_all)
+            depth_all += 1
+        except:
+            break
+
+    return sys._getframe((depth_all + depth) % depth_all)

@@ -1,6 +1,20 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-__author__ = 'liyiqun'
+#
+#  Copyright (c) 2016, China Telecommunication Co., Ltd.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
 
 import tornado.httpserver
 import tornado.ioloop
@@ -20,12 +34,13 @@ from common import *
 from flow_serv import flow_handler
 import os
 import os.path
+import copy
 
 swagger.docs()
 
 
 topo_interval =  1000*1000
-link_interval =  500*1000
+link_interval =  10#500*1000
 
 class fetch_thread(threading.Thread):
     def __init__(self, app_obj):
@@ -64,7 +79,7 @@ class fetch_thread(threading.Thread):
             self.fetcher.vlink_modified = 0
         pass
 
-    def set_equips(self):
+    def set_topo(self):
         'Set the routers data to who requires them. e.g. the controller micro service'
         # Set equip data to ms_controller. Moved to sync_lsp of lsp_serv.py
 
@@ -75,6 +90,10 @@ class fetch_thread(threading.Thread):
         args['vlinks'] = self.fetcher.simple_vlinks
         rpc.form_request('ms_flow_set_topo', args)
         r = rpc.do_sync_post()
+
+        rpc = base_rpc(microsrv_linkstat_url)
+        rpc.form_request('ms_link_set_links', args)
+        rpc.do_sync_post()
 
         pass
 
@@ -133,7 +152,7 @@ class fetch_thread(threading.Thread):
             for p in v['ports']:
                 pid = p['uid']
                 if 'utilization' in v and  pid in v['utilization']:
-                    total_usage +=  float(v['utilization'][pid])
+                    total_usage +=  float(v['utilization'][pid]) * total_bw
                     pass
             vm.percentage = float(total_usage / total_bw)
             m.append(vm.__dict__)
@@ -155,10 +174,10 @@ class fetch_thread(threading.Thread):
                 self.fetcher.fetch_port()
                 self.fetcher.fetch_vlink()
                 self.form_equip_model()
+                # self.set_link_list()
+                self.set_topo()
                 self.fetch_link_status()
                 self.form_vlink_model()
-                self.set_link_list()
-                self.set_equips()
                 last_topo_tm = tm
                 last_link_tm = tm
                 self.app.switch_equip()
@@ -179,7 +198,8 @@ class topo_handler(base_handler):
         super(topo_handler, self).initialize()
         self.resp_func = {'topo_man_get_equip': self.get_equips, 'topo_man_get_vlinks':self.get_vlinks,
                           'topo_man_get_topo':self.get_topo}
-        self.async_func = {'topo_man_update_equip':self.update_equip}
+        self.async_func = {'topo_man_update_equip':self.update_equip, 'topo_man_get_flow_by_equip':self.get_flow_by_equip,
+                           'topo_man_set_vlink_delay':self.set_link_delay}
         self.log = 0
         pass
 
@@ -216,6 +236,86 @@ class topo_handler(base_handler):
         res = yield self.do_query(microsrv_topo_url, 'ms_topo_update_equip', req['args'])
         raise tornado.gen.Return(res)
 
+    @tornado.gen.coroutine
+    def set_link_delay(self, req):
+        res = yield self.do_query(microsrv_topo_url, 'ms_topo_set_vlink_delay', req['args'])
+        raise tornado.gen.Return(res)
+
+
+    @tornado.gen.coroutine
+    def get_flow_by_equip(self, req):
+        '''
+            1. The req contains 'equip_uid' argument.  This func call ms_flow to get current flows in this equip.
+            2. Current flows is a list of {src, dst, vlink_uid, bps}
+            3. Aggregate all flows into {cust_uid, cust_name, bps, next_hop_uid, next_hop_name} and return the result
+        '''
+        final_resp = {'err_code':-1, 'result':{}}
+        try:
+            equip = req['args']['equip_uid']
+
+            #Call ms_flow to get flow
+            resp = yield self.do_query(microsrv_flow_url, 'ms_flow_get_flow', {'equip_uid':equip})
+            flows = resp['result']['flows']
+
+            # Form src ip list and get customer of all flow.
+            src_ips = {}
+            for f in flows:
+                src_ips[f['src']] = 0
+            ip_list = [x for x in src_ips]
+
+            resp = yield self.do_query(microsrv_cust_url, 'ms_cust_get_customer_by_ip', {'ips':ip_list})
+            custs = resp['result']
+
+            #Aggregate data.  cust_flows is {cust_uid: {cust_name, hops:{next_hop_uid:{next_hop_name, bps} } }}
+            cust_flows = {}
+            equips = self.application.fetcher.fetcher.equip_map
+            for f in flows:
+                c = custs[f['src']] if f['src'] in custs else {'name':'Unknown', 'cust_uid':'-1'}
+                cid = c['cust_uid']
+                try:
+                    next = str(f['next_hop_uid'])
+                    if cid in cust_flows:
+                        fs = cust_flows[cid]['hops']
+                        if next in fs:
+                            link = fs[next]
+                            link['bps'] += f['bps']
+                        else:
+                            fs[next] =  {'next_hop_name':equips[next]['name'],
+                                         'next_hop_uid':next,
+                                                     'bps': f['bps']}
+                    else:
+                        hops = {next:{'next_hop_name':equips[next]['name'],
+                                      'next_hop_uid':next, 'bps': f['bps']}}
+                        cust_flows[cid] = {'cust_name':c['name'], 'hops':hops}
+                except (KeyError,LookupError):
+                    traceback.print_exc()
+                    pass
+                pass
+
+            #form output flow list
+            flow_list = []
+            for c in cust_flows:
+                f = {'cust_uid':c, 'cust_name':cust_flows[c]['cust_name']}
+                hops = cust_flows[c]['hops']
+                for h in hops:
+                    fc = copy.copy(f)
+                    fc['next_hop_name'] = hops[h]['next_hop_name']
+                    fc['next_hop_uid'] = hops[h]['next_hop_uid']
+                    fc['bps'] =  hops[h]['bps']
+                    flow_list.append(fc)
+                    pass
+                pass
+
+            # Sort the list.
+            flow_list.sort(reverse=True, key=lambda x:x['bps'])
+
+            final_resp['err_code'] = 0
+            final_resp['result'] = {'flows':flow_list}
+
+        except (LookupError, KeyError):
+            traceback.print_exc()
+
+        raise tornado.gen.Return(final_resp)
 
 
     def get(self):
@@ -248,7 +348,6 @@ class topo_handler(base_handler):
                     resp['err_code'] = -2
                     resp['msg'] = 'Requested resource is not available now'
                     resp['result'] = {}
-                print resp
                 self.write(json.dumps(resp))
                 self.finish()
             else:
@@ -320,8 +419,8 @@ class topo_app(tornado.web.Application):
         self.link = [None, None]
         self.cur_link = 0
 
-        fetcher = fetch_thread(self)
-        fetcher.start()
+        self.fetcher = fetch_thread(self)
+        self.fetcher.start()
 
         pass
 
@@ -340,9 +439,11 @@ class topo_app(tornado.web.Application):
         self.equip[1 - self.cur_equip] = eq
 
     def get_active_link(self):
+        # print 'Get Active Link:' + str(self.cur_link)
         return self.link[self.cur_link]
 
     def set_idle_link(self, lk):
+        # print 'SET Link ' + str(1 - self.cur_link)
         self.link[1 - self.cur_link] = lk
 
 class flow_rest_handler(flow_handler):
@@ -377,12 +478,12 @@ class flow_rest_handler(flow_handler):
 class swagger_app(swagger.Application):
     def __init__(self, topo_app):
         settings = {
-            'static_path': os.path.join(os.path.dirname(__file__), 'sdno-link-monitor.swagger')
+            'static_path': os.path.join(os.path.dirname(__file__), 'sdnomonitoring.swagger')
         }
 
-        handlers = [(r'/openoapi/sdno-link-monitor/v1/vlinks', vlink_handler),
-                    (r'/openoapi/sdno-link-monitor/v1/flows/(.+)', flow_rest_handler),
-                    (r'/openoapi/sdno-link-monitor/v1/(swagger.json)', tornado.web.StaticFileHandler, dict(path=settings['static_path']))
+        handlers = [(r'/openoapi/sdnomonitoring/v1/vlinks', vlink_handler),
+                    (r'/openoapi/sdnomonitoring/v1/flows/(.+)', flow_rest_handler),
+                    (r'/openoapi/sdnomonitoring/v1/(swagger.json)', tornado.web.StaticFileHandler, dict(path=settings['static_path']))
         ]
 
         super(swagger_app, self).__init__(handlers, **settings)
@@ -392,7 +493,7 @@ class swagger_app(swagger.Application):
                                  'percentage':'util_ratio'}
         tornado.ioloop.IOLoop.instance().add_timeout(
                         datetime.timedelta(milliseconds=500),
-                        openo_register, 'link_flow_monitor', 'v1', '/openoapi/sdno-link_flow_monitor/v1',
+                        openo_register, 'link_flow_monitor', 'v1', '/openoapi/sdnomonitoring/v1',
                         '127.0.0.1', te_topo_rest_port )
 
         # For Test Only.

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # -*- coding: utf_8 -*-
 #
 #  Copyright (c) 2016, China Telecommunication Co., Ltd.
@@ -16,7 +16,24 @@
 #  limitations under the License.
 #
 
-try:
-    from klog import *
-except ImportError:
-    from plog import *
+import threading
+
+### ###########################################################
+# Decorator to threading lock a function
+#
+
+
+class locktan(object):
+    lock = threading.RLock()
+
+    def __call__(self, fn):
+        def lockfn(*args, **kwargs):
+            locktan.lock.acquire()
+            try:
+                result = fn(*args, **kwargs)
+            except:
+                raise
+            finally:
+                locktan.lock.release()
+            return result
+        return lockfn

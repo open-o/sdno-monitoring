@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # -*- coding: utf_8 -*-
 #
 #  Copyright (c) 2016, China Telecommunication Co., Ltd.
@@ -16,7 +16,16 @@
 #  limitations under the License.
 #
 
-try:
-    from klog import *
-except ImportError:
-    from plog import *
+import threading
+
+
+class DeferDo(threading.Thread):
+
+    def __init__(self, defer, cookie=None):
+        threading.Thread.__init__(self)
+        self.defer = defer
+        self.cookie = cookie
+        self.start()
+
+    def run(self):
+        self.defer(self.cookie)
