@@ -16,7 +16,23 @@
 #  limitations under the License.
 #
 
-try:
-    from klog import *
-except ImportError:
-    from plog import *
+'''
+Interface for tornado
+'''
+
+import netflow as nf
+
+# Collect log file from jnca
+nf.lfp = LogFileProcessor("../../jnca", "../../jnca/bak0906")
+
+
+def docmd_flow(calldic):
+    request = calldic["request"]
+
+    if request == "ms_flow_set_topo":
+        return nf.ms_flow_set_topo(calldic)
+
+    if request == "ms_flow_get_flow":
+        return nf.ms_flow_get_flow(calldic)
+
+    return "Bad request '%s'" % request

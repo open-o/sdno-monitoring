@@ -16,7 +16,20 @@
 #  limitations under the License.
 #
 
-try:
-    from klog import *
-except ImportError:
-    from plog import *
+'''
+Interface for tornado
+'''
+
+import snmp
+
+
+def docmd_ms_link_links(calldic):
+    request = calldic["request"]
+
+    if request == "ms_link_set_links":
+        return snmp.ms_link_set_links(calldic)
+
+    if request == "ms_link_get_status":
+        return snmp.ms_link_get_status(calldic)
+
+    return "Bad request '%s'" % request

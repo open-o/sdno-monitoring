@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# -*- coding: utf_8 -*-
+# -*- coding: utf-8 -*-
 #
-#  Copyright (c) 2016, China Telecommunication Co., Ltd.
+#  Copyright 2016 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -79,8 +79,6 @@ def todict(obj, classkey=None):
         return data
     elif hasattr(obj, "_ast"):
         return todict(obj._ast())
-    elif hasattr(obj, "__iter__"):
-        return [todict(v, classkey) for v in obj]
     elif hasattr(obj, "__dict__"):
         data = dict([(key, todict(value, classkey))
                      for key, value in obj.__dict__.iteritems()
@@ -88,6 +86,8 @@ def todict(obj, classkey=None):
         if classkey is not None and hasattr(obj, "__class__"):
             data[classkey] = obj.__class__.__name__
         return data
+    elif hasattr(obj, "__iter__"):
+        return [todict(v, classkey) for v in obj]
     else:
         return obj
 
@@ -155,14 +155,4 @@ class ColorPrint:
     c = cyan
     h = gray
 
-
 cp = ColorPrint
-'''
-cp.r = cp.red
-cp.g = cp.green
-cp.y = cp.yellow
-cp.b = cp.blue
-cp.p = cp.purple
-cp.c = cp.cyan
-cp.h = cp.gray
-'''

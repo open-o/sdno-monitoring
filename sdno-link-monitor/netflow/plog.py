@@ -1,7 +1,7 @@
-#!/usr/bin/python
-# -*- coding: utf_8 -*-
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 #
-#  Copyright (c) 2016, China Telecommunication Co., Ltd.
+#  Copyright 2016 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import sys
 import ctypes
 import traceback
 import datetime
+from bprint import cp
 
 
 class KLog(object):
@@ -39,13 +40,18 @@ class KLog(object):
 
     filepath = "/dev/stdout"
 
+    _to_stderr = False
+    _to_stdout = False
+    _to_file = False
+    _to_network = False
+
     @classmethod
     def to_stderr(cls, enable=True):
-        pass
+        cls._to_stderr = enable
 
     @classmethod
     def to_stdout(cls, enable=True):
-        pass
+        cls._to_stdout = enable
 
     @classmethod
     def to_file(
@@ -55,6 +61,8 @@ class KLog(object):
             time=0,
             when=0,
             enable=True):
+
+        cls._to_file = enable
 
         now = datetime.datetime.now()
         path = pathfmt
@@ -87,10 +95,18 @@ class KLog(object):
     @classmethod
     def _log(cls, indi, mask, s, nl):
         now = datetime.datetime.now()
-        line = "|%s|%s.%d|%s\n" % (indi, now.strftime(
-            "%Y/%m/%d %H:%M:%S"), now.microsecond / 1000, s)
-        cls.logfile.write(line)
-        cls.logfile.flush()
+
+        frame = sys._getframe(2)
+        _x_ln = frame.f_lineno
+        _x_fn = frame.f_code.co_filename
+        _x_func = frame.f_code.co_name
+
+        ts = "%s.03%d" % (now.strftime("%Y/%m/%d %H:%M:%S"), now.microsecond / 1000)
+
+        line = "|%s|%s|%s|%s|%s|%s\n" % (cp.r(indi), cp.y(ts),
+                _x_fn, cp.c(_x_func), cp.c(_x_ln), s)
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
     @classmethod
     def fatal(cls, s="", nl=True):

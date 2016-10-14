@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# -*- coding: utf_8 -*-
+# -*- coding: utf-8 -*-
 #
-#  Copyright (c) 2016, China Telecommunication Co., Ltd.
+#  Copyright 2016 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -739,7 +739,14 @@ def cmdpkg_json_to_dat(dic):
 
     dic["iid"] = iidgen.iid()
 
-    return json.dumps(dic)
+    try:
+        return json.dumps(dic)
+    except:
+        try:
+            return varfmt(dic)
+        except:
+            dic.resp = str(dic.resp)
+            return json.dumps(dic)
 
 CmdPkg.set_backend(PLFMT_JSN, cmdpkg_json_to_dic, cmdpkg_json_to_dat)
 
