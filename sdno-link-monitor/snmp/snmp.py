@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# -*- coding: utf_8 -*-
+# -*- coding: utf-8 -*-
 #
-#  Copyright (c) 2016, China Telecommunication Co., Ltd.
+#  Copyright 2016 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -124,7 +124,6 @@ def odic(indic):
 ### #####################################################################
 # Globals
 #
-
 
 oid_static = {
     ".1.3.6.1.2.1.2.2.1.1": "ifIndex",
@@ -649,6 +648,7 @@ def restart(cmdctx, calldic):
 
 
 update_map()
-# spi.update()
 
-run(server='paste', host='0.0.0.0', port=10000, debug=True)
+if __name__ == "__main__":
+    run(server='paste', host='0.0.0.0', port=10000, debug=True)
+

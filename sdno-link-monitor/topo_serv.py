@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 #
-#  Copyright (c) 2016, China Telecommunication Co., Ltd.
+#  Copyright 2016 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -386,7 +386,7 @@ class vlink_handler(base_handler):
         vm = self.application.topo_app.get_active_link()
         sw_vm = self.application.map_link_attrib(vm)
         res['vlinks'] = sw_vm
-        self.write(json.dumps(sw_vm))
+        self.write(json.dumps(res))
         self.finish()
         pass
 
@@ -397,13 +397,7 @@ class topo_app(tornado.web.Application):
     def __init__(self):
 
         handlers = [
-            (r'/', topo_handler),
-            (r'/microsrv/topo', ms_topo_handler),
-            (r'/microsrv/link_stat', ms_link_handler),
-            (r'/microsrv/flow', ms_topo_handler),  # For testing
-            (r'/microsrv/customer', ms_topo_handler),
-            (r'/microsrv/tunnel', ms_topo_handler),
-            (r'/microsrv/controller', ms_topo_handler)
+            (r'/', topo_handler)
         ]
 
         settings = {
@@ -505,6 +499,8 @@ class swagger_app(swagger.Application):
 
     def map_link_attrib(self, vlinks):
         sw_vlinks = []
+        if vlinks is None:
+            return sw_vlinks
         for vl in vlinks:
             sw = {}
             for k in self.vlink_attrib_map:
