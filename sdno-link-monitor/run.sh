@@ -15,7 +15,10 @@
 #  limitations under the License.
 #
 
-PROC_UNIQ_KEY=677bff93-babc-48c8-a685-3ecd40f26f33
-
+PROC_UNIQ_KEY=6a34e87e-4716-4b6b-b971-82ee795b094a
 BASEDIR=$(dirname $(readlink -f $0))
-nohup python ${BASEDIR}/snmp.py --uniq=${PROC_UNIQ_KEY} &> /dev/null &
+
+${BASEDIR}/snmp/run.sh
+${BASEDIR}/netflow/run.sh
+
+nohup python ${BASEDIR}/topo_serv.py --uniq=${PROC_UNIQ_KEY} &> /dev/null &

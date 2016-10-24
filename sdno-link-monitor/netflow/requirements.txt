@@ -1,0 +1,5 @@
+bottle==0.12.9
+Paste==2.0.3
+dotmap==1.2.0
+easysnmp==0.2.4
+pymongo==3.3.0

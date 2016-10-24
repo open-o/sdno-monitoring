@@ -15,7 +15,4 @@
 #  limitations under the License.
 #
 
-PROC_UNIQ_KEY=677bff93-babc-48c8-a685-3ecd40f26f33
-
-BASEDIR=$(dirname $(readlink -f $0))
-nohup python ${BASEDIR}/snmp.py --uniq=${PROC_UNIQ_KEY} &> /dev/null &
+pip install -r requirements.txt
