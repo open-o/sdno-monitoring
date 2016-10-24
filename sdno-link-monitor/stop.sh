@@ -15,7 +15,9 @@
 #  limitations under the License.
 #
 
-PROC_UNIQ_KEY=677bff93-babc-48c8-a685-3ecd40f26f33
-
 BASEDIR=$(dirname $(readlink -f $0))
-nohup python ${BASEDIR}/snmp.py --uniq=${PROC_UNIQ_KEY} &> /dev/null &
+PROC_UNIQ_KEY=`grep "PROC_UNIQ_KEY=" ${BASEDIR}/run.sh | awk -F= '{print $2}' | sed 's/[[:space:]]//g'`
+pgrep python -a | grep "uniq=${PROC_UNIQ_KEY}" | awk '{print $1}' | xargs kill -9
+
+${BASEDIR}/snmp/stop.sh
+${BASEDIR}/netflow/stop.sh
