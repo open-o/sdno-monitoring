@@ -15,10 +15,19 @@
 #  limitations under the License.
 #
 
+MSB_ADDRESS="msb.openo.org:8086"
+SDNO_MONITORING_ADDRESS="sdno-monitoring:8610"
+
 PROC_UNIQ_KEY=6a34e87e-4716-4b6b-b971-82ee795b094a
 BASEDIR=$(dirname $(readlink -f $0))
+
+OPTS=""
+OPTS+=" --uniq=${PROC_UNIQ_KEY}"
+OPTS+=" --msburl=${MSB_ADDRESS}"
+OPTS+=" --localurl=${SDNO_MONITORING_ADDRESS}"
 
 ${BASEDIR}/snmp/run.sh
 ${BASEDIR}/netflow/run.sh
 
-nohup python ${BASEDIR}/topo_serv.py --uniq=${PROC_UNIQ_KEY} &> /dev/null &
+nohup python ${BASEDIR}/topo_serv.py ${OPTS} &> /dev/null &
+nohup python ${BASEDIR}/topo_server.py ${OPTS} &> /dev/null &

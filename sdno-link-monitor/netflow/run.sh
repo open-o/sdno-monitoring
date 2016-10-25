@@ -15,7 +15,15 @@
 #  limitations under the License.
 #
 
-PROC_UNIQ_KEY=e6308869-938e-46d9-b04d-4b87f6847962
+MSB_ADDRESS="msb.openo.org:8086"
+SDNO_MONITORING_ADDRESS="sdno-monitoring:8610"
 
+PROC_UNIQ_KEY=e6308869-938e-46d9-b04d-4b87f6847962
 BASEDIR=$(dirname $(readlink -f $0))
-nohup python ${BASEDIR}/netflow.py --uniq=${PROC_UNIQ_KEY} &> /dev/null &
+
+OPTS=""
+OPTS+=" --uniq=${PROC_UNIQ_KEY}"
+OPTS+=" --msburl=${MSB_ADDRESS}"
+OPTS+=" --localurl=${SDNO_MONITORING_ADDRESS}"
+
+nohup python ${BASEDIR}/netflow.py ${OPTS} &> /dev/null &
