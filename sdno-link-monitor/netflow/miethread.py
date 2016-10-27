@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# -*- coding: utf_8 -*-
+# -*- coding: utf-8 -*-
 #
 #  Copyright 2016 China Telecommunication Co., Ltd.
 #

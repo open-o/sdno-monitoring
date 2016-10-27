@@ -41,7 +41,7 @@ class KLog(object):
     filepath = "/dev/stdout"
 
     _to_stderr = False
-    _to_stdout = False
+    _to_stdout = True
     _to_file = False
     _to_network = False
 
@@ -93,7 +93,7 @@ class KLog(object):
         pass
 
     @classmethod
-    def _log(cls, indi, mask, s, nl):
+    def _log(cls, indi, mask, *str_segs):
         now = datetime.datetime.now()
 
         frame = sys._getframe(2)
@@ -101,44 +101,67 @@ class KLog(object):
         _x_fn = frame.f_code.co_filename
         _x_func = frame.f_code.co_name
 
-        ts = "%s.03%d" % (now.strftime("%Y/%m/%d %H:%M:%S"), now.microsecond / 1000)
+        ts = "%s.%03d" % (now.strftime("%Y/%m/%d %H:%M:%S"), now.microsecond / 1000)
 
-        line = "|%s|%s|%s|%s|%s|%s\n" % (cp.r(indi), cp.y(ts),
-                _x_fn, cp.c(_x_func), cp.c(_x_ln), s)
-        sys.stdout.write(line)
-        sys.stdout.flush()
+        fullstr = ""
+        for seg in str_segs:
+            try:
+                s = str(seg)
+            except:
+                try:
+                    s = unicode(seg)
+                except:
+                    s = seg.encode("utf-8")
+            fullstr += s
 
-    @classmethod
-    def fatal(cls, s="", nl=True):
-        KLog._log('F', cls.KLOG_FATAL, s, nl)
+        line = "|%s|%s|%s|%s|%s| %s\n" % (cp.r(indi), cp.y(ts),
+                _x_fn, cp.c(_x_func), cp.c(_x_ln), fullstr)
 
-    @classmethod
-    def alert(cls, s="", nl=True):
-        KLog._log('A', cls.KLOG_ALERT, s, nl)
+        if cls._to_stderr:
+            sys.stderr.write(line)
 
-    @classmethod
-    def critical(cls, s="", nl=True):
-        KLog._log('C', cls.KLOG_CRIT, s, nl)
+        if cls._to_stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
 
-    @classmethod
-    def error(cls, s="", nl=True):
-        KLog._log('E', cls.KLOG_ERR, s, nl)
+        if cls._to_file:
+            sys.logfile.write(line)
+            sys.logfile.flush()
 
-    @classmethod
-    def warning(cls, s="", nl=True):
-        KLog._log('W', cls.KLOG_WARNING, s, nl)
-
-    @classmethod
-    def info(cls, s="", nl=True):
-        KLog._log('I', cls.KLOG_INFO, s, nl)
-
-    @classmethod
-    def notice(cls, s="", nl=True):
-        KLog._log('N', cls.KLOG_NOTICE, s, nl)
+        if cls._to_network:
+            pass
 
     @classmethod
-    def debug(cls, s="", nl=True):
-        KLog._log('D', cls.KLOG_DEBUG, s, nl)
+    def fatal(cls, *str_segs):
+        KLog._log('F', cls.KLOG_FATAL, *str_segs)
+
+    @classmethod
+    def alert(cls, *str_segs):
+        KLog._log('A', cls.KLOG_ALERT, *str_segs)
+
+    @classmethod
+    def critical(cls, *str_segs):
+        KLog._log('C', cls.KLOG_CRIT, *str_segs)
+
+    @classmethod
+    def error(cls, *str_segs):
+        KLog._log('E', cls.KLOG_ERR, *str_segs)
+
+    @classmethod
+    def warning(cls, *str_segs):
+        KLog._log('W', cls.KLOG_WARNING, *str_segs)
+
+    @classmethod
+    def info(cls, *str_segs):
+        KLog._log('I', cls.KLOG_INFO, *str_segs)
+
+    @classmethod
+    def notice(cls, *str_segs):
+        KLog._log('N', cls.KLOG_NOTICE, *str_segs)
+
+    @classmethod
+    def debug(cls, *str_segs):
+        KLog._log('D', cls.KLOG_DEBUG, *str_segs)
 
 
 klog = KLog

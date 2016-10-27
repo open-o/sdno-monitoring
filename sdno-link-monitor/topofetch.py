@@ -46,15 +46,17 @@ class topo_fetcher(object):
         pass
 
     def prepare(self):
-        self.brs = openo_query_service('sdno-brs', 'v1')
+        # self.brs = openo_query_service('sdno-brs', 'v1')
+        self.brs = microsrvurl_dict['openo_brs_url']
         pass
 
     def fetch_equip(self):
 
         fetched = 0
-        if self.brs and 'nodes' in self.brs and len(self.brs['nodes']) > 0:
-            n = self.brs['nodes'][0]
-            url = 'http://' + n['ip'] + ':' + str(n['port']) + self.brs['url'] + '/managed-elements'
+        # if self.brs and 'nodes' in self.brs and len(self.brs['nodes']) > 0:
+        if self.brs:
+            # n = self.brs['nodes'][0]
+            url = self.brs + '/managed-elements'
             rpc = base_rpc(url)
             resp = rpc.do_sync_get()
             try:
@@ -75,7 +77,7 @@ class topo_fetcher(object):
                 pass
 
         if fetched == 0:
-            rpc = base_rpc(microsrv_topo_url)
+            rpc = base_rpc(microsrvurl_dict['microsrv_topo_url'])
             args = {}
             args['last_fetch'] = self.last_equip_ts
             rpc.form_request('ms_topo_get_equip', args)
@@ -103,9 +105,10 @@ class topo_fetcher(object):
 
         rpc_brs = None
         url = ''
-        if self.brs and 'nodes' in self.brs and len(self.brs['nodes']) > 0:
-            n = self.brs['nodes'][0]
-            url = 'http://' + n['ip'] + ':' + str(n['port']) + self.brs['url'] + '/logical-termination-points/meID='
+        # if self.brs and 'nodes' in self.brs and len(self.brs['nodes']) > 0:
+        if self.brs :
+            # n = self.brs['nodes'][0]
+            url = self.brs + '/logical-termination-points/meID='
             rpc_brs = base_rpc()
 
 
@@ -136,7 +139,7 @@ class topo_fetcher(object):
                 arg = {}
                 arg['last_fetch'] = self.last_port_ts
                 arg['uid'] = e['uid']
-                rpc = base_rpc(microsrv_topo_url)
+                rpc = base_rpc(microsrvurl_dict['microsrv_topo_url'])
                 rpc.form_request('ms_topo_get_ports', arg)
                 ports = rpc.do_sync_post()
                 if ports is None:
@@ -160,9 +163,11 @@ class topo_fetcher(object):
     def fetch_vlink(self):
 
         fetched = 0
-        if self.brs and 'nodes' in self.brs and len(self.brs['nodes']) > 0:
-            n = self.brs['nodes'][0]
-            url = 'http://' + n['ip'] + ':' + str(n['port']) + self.brs['url'] + '/topological-links'
+        # if self.brs and 'nodes' in self.brs and len(self.brs['nodes']) > 0:
+        if self.brs :
+            # n = self.brs['nodes'][0]
+            # url = 'http://' + n['ip'] + ':' + str(n['port']) + self.brs['url'] + '/topological-links'
+            url = self.brs + '/topological-links'
             rpc = base_rpc(url)
             resp = rpc.do_sync_get()
             try:
@@ -185,7 +190,7 @@ class topo_fetcher(object):
                 pass
 
         if fetched == 0:
-            rpc = base_rpc(microsrv_topo_url)
+            rpc = base_rpc(microsrvurl_dict['microsrv_topo_url'])
             args = {}
             args['last_fetch'] = self.last_vlink_ts
             rpc.form_request('ms_topo_get_vlink', args)
@@ -248,7 +253,7 @@ class customer_fetcher(object):
         pass
 
     def fetch_customer(self):
-        rpc = base_rpc(microsrv_cust_url)
+        rpc = base_rpc(microsrvurl_dict['microsrv_cust_url'])
         args = {}
         args['last_fetch'] = self.last_fetch_ts
 

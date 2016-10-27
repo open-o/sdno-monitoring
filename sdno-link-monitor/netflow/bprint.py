@@ -59,7 +59,7 @@ def formatb(obj, title=None, lvl=1):
         ln = f.f_lineno
         fn = f.f_code.co_filename
 
-        title = "%s %s:%d" % (title, fn, ln)
+        title = "%s |%s:%d" % (title, fn, ln)
         pre = cp.r("\r\n>>> %s\r\n" % title)
         pst = cp.r("\r\n<<< %s\r\n" % title)
         res = pre + res + pst

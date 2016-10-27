@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# -*- coding: utf_8 -*-
+# -*- coding: utf-8 -*-
 #
 #  Copyright 2016 China Telecommunication Co., Ltd.
 #
@@ -199,12 +199,15 @@ class ConfCenter(object):
                 return True
 
             if showtype[0] == 'u':
+                # used
                 return self.dichas(self._dict_conf_refs, key)
 
             if showtype[0] == 'n':
+                # not used
                 return not self.dichas(self._dict_conf_refs, key)
 
             if showtype[0] == 't':
+                # those who return default value
                 return self.dichas(self._dict_conf_missed, key)
 
             return True

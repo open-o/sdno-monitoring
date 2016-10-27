@@ -48,7 +48,7 @@ class fetch_thread(threading.Thread):
         pass
 
     def set_equips(self):
-        rpc = base_rpc(microsrv_flow_url)
+        rpc = base_rpc(microsrvurl_dict['microsrv_flow_url'])
         args = {}
         args['equips'] = self.fetcher.equips
         rpc.form_request('ms_flow_set_equips', args)
@@ -183,7 +183,7 @@ class flow_handler(tornado.web.RequestHandler):
             rpc.form_request('ms_cust_get_customer_by_ip', args)
             req_body = json.dumps(rpc.request_body)
 
-            http_req = tornado.httpclient.HTTPRequest(microsrv_cust_url ,method='POST', body = req_body)
+            http_req = tornado.httpclient.HTTPRequest(microsrvurl_dict['microsrv_cust_url'] ,method='POST', body = req_body)
             client = tornado.httpclient.AsyncHTTPClient()
             cust_resp = yield tornado.gen.Task(client.fetch, http_req)
 
@@ -266,7 +266,7 @@ class flow_handler(tornado.web.RequestHandler):
 
 
             req_body = self.subreq_func[req['request']](req)
-            http_req = tornado.httpclient.HTTPRequest(microsrv_flow_url ,method='POST', body = req_body)
+            http_req = tornado.httpclient.HTTPRequest(microsrvurl_dict['microsrv_flow_url'] ,method='POST', body = req_body)
             client = tornado.httpclient.AsyncHTTPClient()
             client.fetch(http_req, callback = self.callback_func[req['request']])
         except Exception, data:

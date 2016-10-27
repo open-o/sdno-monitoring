@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# -*- coding: utf_8 -*-
+# -*- coding: utf-8 -*-
 #
 #  Copyright 2016 China Telecommunication Co., Ltd.
 #
@@ -26,7 +26,6 @@ import traceback
 import socket
 import random
 import shlex
-import json
 
 from functools import reduce
 

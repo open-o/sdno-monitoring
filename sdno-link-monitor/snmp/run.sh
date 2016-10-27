@@ -15,7 +15,15 @@
 #  limitations under the License.
 #
 
-PROC_UNIQ_KEY=677bff93-babc-48c8-a685-3ecd40f26f33
+MSB_ADDRESS="msb.openo.org:8086"
+SDNO_MONITORING_ADDRESS="sdno-monitoring:8610"
 
+PROC_UNIQ_KEY=677bff93-babc-48c8-a685-3ecd40f26f33
 BASEDIR=$(dirname $(readlink -f $0))
-nohup python ${BASEDIR}/snmp.py --uniq=${PROC_UNIQ_KEY} &> /dev/null &
+
+OPTS=""
+OPTS+=" --uniq=${PROC_UNIQ_KEY}"
+OPTS+=" --msburl=${MSB_ADDRESS}"
+OPTS+=" --localurl=${SDNO_MONITORING_ADDRESS}"
+
+nohup python ${BASEDIR}/snmp.py ${OPTS} &> /dev/null &

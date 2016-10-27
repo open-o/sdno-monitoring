@@ -19,6 +19,7 @@
 import tornado.httpserver
 import tornado.ioloop
 import tornado.options
+from tornado.options import options
 import tornado.web
 import threading
 import tornado.gen
@@ -55,7 +56,7 @@ class fetch_thread(threading.Thread):
         if self.fetcher.vlink_modified == 0:
             return
 
-        rpc = base_rpc(microsrv_linkstat_url)
+        rpc = base_rpc(microsrvurl_dict['microsrv_linkstat_url'])
         args = {}
         vls = []
         for l in self.fetcher.vlinks:
@@ -84,14 +85,14 @@ class fetch_thread(threading.Thread):
         # Set equip data to ms_controller. Moved to sync_lsp of lsp_serv.py
 
         # Set equip and link data to ms_flow
-        rpc = base_rpc(microsrv_flow_url)
+        rpc = base_rpc(microsrvurl_dict['microsrv_flow_url'])
         args = {}
         args['equips'] = self.fetcher.equips
         args['vlinks'] = self.fetcher.simple_vlinks
         rpc.form_request('ms_flow_set_topo', args)
         r = rpc.do_sync_post()
 
-        rpc = base_rpc(microsrv_linkstat_url)
+        rpc = base_rpc(microsrvurl_dict['microsrv_linkstat_url'])
         rpc.form_request('ms_link_set_links', args)
         rpc.do_sync_post()
 
@@ -99,7 +100,7 @@ class fetch_thread(threading.Thread):
 
 
     def fetch_link_status(self):
-        rpc = base_rpc(microsrv_linkstat_url)
+        rpc = base_rpc(microsrvurl_dict['microsrv_linkstat_url'])
         args = {}
         #args['uid'] = l['uid']
         rpc.form_request('ms_link_get_status', args)
@@ -233,12 +234,12 @@ class topo_handler(base_handler):
 
     @tornado.gen.coroutine
     def update_equip(self,req):
-        res = yield self.do_query(microsrv_topo_url, 'ms_topo_update_equip', req['args'])
+        res = yield self.do_query(microsrvurl_dict['microsrv_topo_url'], 'ms_topo_update_equip', req['args'])
         raise tornado.gen.Return(res)
 
     @tornado.gen.coroutine
     def set_link_delay(self, req):
-        res = yield self.do_query(microsrv_topo_url, 'ms_topo_set_vlink_delay', req['args'])
+        res = yield self.do_query(microsrvurl_dict['microsrv_topo_url'], 'ms_topo_set_vlink_delay', req['args'])
         raise tornado.gen.Return(res)
 
 
@@ -254,7 +255,7 @@ class topo_handler(base_handler):
             equip = req['args']['equip_uid']
 
             #Call ms_flow to get flow
-            resp = yield self.do_query(microsrv_flow_url, 'ms_flow_get_flow', {'equip_uid':equip})
+            resp = yield self.do_query(microsrvurl_dict['microsrv_flow_url'], 'ms_flow_get_flow', {'equip_uid':equip})
             flows = resp['result']['flows']
 
             # Form src ip list and get customer of all flow.
@@ -263,7 +264,7 @@ class topo_handler(base_handler):
                 src_ips[f['src']] = 0
             ip_list = [x for x in src_ips]
 
-            resp = yield self.do_query(microsrv_cust_url, 'ms_cust_get_customer_by_ip', {'ips':ip_list})
+            resp = yield self.do_query(microsrvurl_dict['microsrv_cust_url'], 'ms_cust_get_customer_by_ip', {'ips':ip_list})
             custs = resp['result']
 
             #Aggregate data.  cust_flows is {cust_uid: {cust_name, hops:{next_hop_uid:{next_hop_name, bps} } }}
@@ -463,11 +464,44 @@ class flow_rest_handler(flow_handler):
             @notes: GET flows/node_uid:abc
         """
         req_body = self.flow_subreq({'args':{'equip_uid':node_uid}})
-        http_req = tornado.httpclient.HTTPRequest(microsrv_flow_url ,method='POST', body = req_body)
+        http_req = tornado.httpclient.HTTPRequest(microsrvurl_dict['microsrv_flow_url'] ,method='POST', body = req_body)
         client = tornado.httpclient.AsyncHTTPClient()
         self.set_rest(1)
         client.fetch(http_req, callback = self.cb_fetch_flow)
         pass
+
+def openo_related_service_query():
+    #{"protocol": "REST", "url": "/openoapi/sdnovsitemgr/v1", "visualRange": 1, "version": "v1", "serviceName": "vsite_mgr", "nodes": [{"ip": "127.0.0.1", "port": 8600, "ttl": 0}]}
+    # print('customer_url---:' + microsrv_cust_url)
+    customer_server_resp = openo_query_service('vsite_mgr', 'v1')
+    # microsrv_cust_url = 'http://127.0.0.1:33771/'
+    if customer_server_resp is not None and 'nodes' in customer_server_resp:
+        for item in customer_server_resp['nodes']:
+            if 'ip' in item:
+                microsrvurl_dict['microsrv_cust_url'] = 'http://' + item['ip'] + ':33771'
+                break
+    # print('customer_url+++:' + microsrv_cust_url)
+
+    #{"driverInfo": {"protocol": "REST", "instanceID": "sdno-driver-ct-te_ID", "ip": "127.0.0.1", "driverName": "sdno-driver-ct-te", "services": [{"support_sys": [{"version": "v1", "type": "ct_te_driver"}], "service_url": "/openoapi/sdno-driver-ct-te/v1/"}], "port": 8670}}
+    # print('microsrv_controller_url---:' + microsrv_controller_url)
+    ms_controller_resp = openo_query_driver('sdno-driver-ct-te', 'sdno-driver-ct-te_ID', 'v1')
+    # microsrv_controller_url = 'http://10.9.63.140:12727/'
+    if ms_controller_resp is not None:
+        for item in ms_controller_resp:
+            if 'driverName' in item and 'sdno-driver-ct-te' == item['driverName']:
+                if 'ip' in item:
+                    microsrvurl_dict['microsrv_controller_url'] = 'http://' + item['ip'] + ':12727'
+                    break
+    # print('microsrv_controller_url+++:' + microsrv_controller_url)
+
+    # microsrv_linkstat_url = 'http://219.141.189.72:10000/link/links'
+    microsrvurl_dict['microsrv_linkstat_url'] = 'http://127.0.0.1:10000/link/links'
+    # print('microsrv_linkstat_url+++:' + microsrv_linkstat_url)
+    # microsrv_flow_url = 'thtp://219.141.189.72:10001/flow'
+    microsrvurl_dict['microsrv_flow_url'] = 'http://127.0.0.1:10001/flow'
+    # print('microsrv_flow_url+++:' + microsrv_flow_url)
+    pass
+
 
 class swagger_app(swagger.Application):
     def __init__(self, topo_app):
@@ -488,13 +522,16 @@ class swagger_app(swagger.Application):
         tornado.ioloop.IOLoop.instance().add_timeout(
                         datetime.timedelta(milliseconds=500),
                         openo_register, 'link_flow_monitor', 'v1', '/openoapi/sdnomonitoring/v1',
-                        '127.0.0.1', te_topo_rest_port )
+                        microsrvurl_dict['te_topo_rest_host'], microsrvurl_dict['te_topo_rest_port'] )
 
-        # For Test Only.
+        # For Test Only. topo_serv.py  need delete brs register after testing ok
+        # tornado.ioloop.IOLoop.instance().add_timeout(
+        #                 datetime.timedelta(milliseconds=1000),
+        #                 openo_register, 'sdno-brs', 'v1', '/openoapi/sdno-brs/v1',
+        #                 microsrvurl_dict['te_topo_rest_host'], microsrvurl_dict['te_topo_rest_port'] )
+
         tornado.ioloop.IOLoop.instance().add_timeout(
-                        datetime.timedelta(milliseconds=1000),
-                        openo_register, 'sdno-brs', 'v1', '/openoapi/sdno-brs/v1',
-                        '127.0.0.1', 65500 )
+                        datetime.timedelta(milliseconds=1500), openo_related_service_query)
 
 
     def map_link_attrib(self, vlinks):
@@ -511,26 +548,26 @@ class swagger_app(swagger.Application):
         pass
 
 
-def strip_uniq_from_argv():
-    '''The --uniq is used to identify a process.
+def strip_parse_from_argv():
+    options.define("uniq", default="2837492392932769", help="service unique id")
+    options.define("localurl", default=microsrvurl_dict['te_topo_rest_host'] + te_host_port_divider + str(microsrvurl_dict['te_topo_rest_port']), help="service host:port")
+    options.define("msburl", default=microsrvurl_dict['te_msb_rest_host'] + te_host_port_divider + str(microsrvurl_dict['te_msb_rest_port']), help="micro service bus host:port")
+    tornado.options.parse_command_line()
+    microsrvurl_dict['te_topo_rest_host'] = options.localurl.split(':')[0]
+    microsrvurl_dict['te_topo_rest_port'] = int(options.localurl.split(':')[1])
+    microsrvurl_dict['openo_ms_url'] = te_protocol + options.msburl + openo_ms_url_prefix
+    microsrvurl_dict['openo_dm_url'] = te_protocol + options.msburl + openo_dm_url_prefix
+    microsrvurl_dict['openo_esr_url'] = te_protocol + options.msburl + openo_esr_url_prefix
+    microsrvurl_dict['openo_brs_url'] = te_protocol + options.msburl + openo_brs_url_prefix
 
-    a.py --uniq=2837492392994857 argm argn ... argz
-    ps aux | grep "--uniq=2837492392994857" | awk '{print $2}' | xargs kill -9
-    '''
-
-    for a in sys.argv:
-        if a.startswith("--uniq="):
-            sys.argv.remove(a)
-
+    pass
 
 if __name__ == '__main__':
-    strip_uniq_from_argv()
-
-    tornado.options.parse_command_line()
+    strip_parse_from_argv()
     app = topo_app()
     swag = swagger_app(app)    # For REST interface
     server = tornado.httpserver.HTTPServer(app)
     server_swag = tornado.httpserver.HTTPServer(swag)
     server.listen(32769)
-    server_swag.listen(te_topo_rest_port)
+    server_swag.listen(microsrvurl_dict['te_topo_rest_port'])
     tornado.ioloop.IOLoop.instance().start()
