@@ -1,3 +1,4 @@
+<?xml version="1.0"?>
 <!--
     Copyright 2016 China Telecommunication Co., Ltd.
 
@@ -26,7 +27,7 @@
     <groupId>org.openo.sdno.monitoring</groupId>
     <artifactId>ct_monitoring</artifactId>
     <packaging>pom</packaging>
-    <name>ct_monitoring</name>
+    <name>sdno-monitoring</name>
     <description>TE link monitor</description>
     <build>
       <defaultGoal>package</defaultGoal>
