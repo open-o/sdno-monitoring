@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 #
-#  Copyright 2016 China Telecommunication Co., Ltd.
+#  Copyright 2016-2017 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ class equipment(base_model):
         self.y = 0.0
         self.pos = ''
         self.ip_str = ''
+        self.model = ''
         self.ports = []
 
     def set_attrib(self, name, val):
@@ -51,6 +52,8 @@ class vlink(base_model):
         super(vlink, self).__init__()
         self.uid = ''
         self.sequip = ''
+        self.sequip_name = ''
+        self.dequip_name = ''
         self.dequip = ''
         self.bandwidth = 0.0    # in Mbps unit.
         self.percentage = 0.0

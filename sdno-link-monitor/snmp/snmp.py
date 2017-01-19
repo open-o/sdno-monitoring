@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 #
-#  Copyright 2016 China Telecommunication Co., Ltd.
+#  Copyright 2016-2017 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -17,83 +17,265 @@
 #
 
 
-# All the object from database
-
 import os
 import sys
+import subprocess
+import traceback
+import time
+import re
 
-sys.path.append("../common")
+sys.path.append("../mie")
 
-os.environ["KLOG_DFCFG"] = os.environ.get("KLOG_DFCFG", "/tmp/snmp.dfcfg")
-os.environ["KLOG_RTCFG"] = os.environ.get("KLOG_RTCFG", "/tmp/snmp.rtcfg")
-os.environ["KLOG_MASK"] = os.environ.get("KLOG_MASK", "facewindFHNS")
-
-from logtan import logtan
-from singleton import AppSingleton, ClsSingleton
-
-from utils import *
-import confcenter
-from xlogger import *
-from bprint import *
-
-from bottle import get, post, put, delete, run, request
-
-from deferdo import DeferDo
-
+from confcenter import XConfCenter
 import miethread
 
-import json
-import time
+from logtan import logtan_mongodb as logtan
+from singleton import AppSingleton, ClsSingleton
+
+from bprint import varprt, varfmt
+from dotdict import DotDict
+from xlogger import klog
+from deferdo import DeferDo
+from maptan import MapTan
+from kstat import kstat, kstatone
+from logmon import KLogMon
+from snmpoper import SnmpOper as sop, oid as soid
 
 import pymongo
 client = pymongo.MongoClient()
 db = client.snmp
 
-map_r__ip_str = {}
-map_r__uid = {}
-
-map_p__ip_str = {}
-map_p__uid = {}
 
 
 ### ###########################################################
 ## Singleton and klog
 #
-############ singleton("/tmp/snmp.pid", "Singleton check failed: snmp already exists")
-# setdebugable()
+AppSingleton("/tmp/snmp.pid", "Singleton check failed: snmp already exists")
 
-logtan.i("application launched")
+### ###########################################################
+## Read default configuration
+#
 
-klog.to_stdout()
-klog.to_file("/tmp/snmp-%N%Y%R.log", size=10485760)
+alias = (
+        ("CMDPORT", "cmdport", 9020),
+        ("DEBUG", "debug", True),
+        )
+
+conf = XConfCenter(group="snmp", rw_cfg="./snmp.cfg", alias=alias)
+KLogMon(conf)
+
+
+### #####################################################################
+## Globals
+#
+
+oid_static = set([
+    "ifIndex",
+    "ifDescr",
+    "ifType",
+    "ifSpeed",
+    "ifHighSpeed",
+    "ifPhysAddress",
+    "ifAdminStatus",
+    "ifOperStatus",
+    ])
+
+oid_runtime = set([
+    # "ifInOctets",
+    # "ifHCInOctets",
+    # "ifInUcastPkts",
+    # "ifInNUcastPkts",
+    # "ifInDiscards",
+    # "ifInErrors",
+    # "ifInUnknownProtos",
+    # "ifOutOctets",
+    "ifHCOutOctets",
+    # "ifOutUcastPkts",
+    # "ifOutNUcastPkts",
+    # "ifOutDiscards",
+    # "ifOutErrors",
+    # "ifOutQLen",
+])
+
+
+### #####################################################################
+## Used to fast access port via some critiria
+#
+
+# ipaddr <=> port
+g_port_fr_ipaddr = MapTan(lambda *a: str(a[0]))
+
+# loopback + ifIndex <=> port
+g_port_fr_ifindex = MapTan(lambda *a: "%s@%s" % (a[1], a[0]))
+
+# ipaddr <=> setport
+g_setport_fr_ip = MapTan(lambda *a: str(a[0]))
+
+# portUid <=> setport
+g_setport_fr_uid = MapTan(lambda *a: str(a[0]))
+
+# All routes
+# {loopback: DotDict}
+g_routers = {}
+
+
+### #####################################################################
+## Router
+#
+class Router(DotDict):
+    #__metaclass__ = ClsSingleton
+
+    def __init__(self, oid_static, oid_runtime, host, comm="ctbri", vern="2c", **kwargs):
+        # kwargs: other fields of a router
+        self.ports = {}
+
+        self.oid = {"static": oid_static, "runtime": oid_runtime}
+
+        self.host = host        # ip_str
+        self.comm = comm        # community
+        self.vern = vern        # version
+
+        for k, v in kwargs.items():
+            self[k] = v
+
+    def load_runtime(self, inf):
+        oids = self.oid.get("runtime", [])
+        if not oids:
+            return
+
+        oldrti = inf.get("rti", DotDict())
+        tmprti = DotDict()
+
+        newinf = DotDict()
+        tmprti["old"] = oldrti.get("new", DotDict())
+        tmprti["new"] = newinf
+
+        newinf["time"] = time.time()
+
+        host = inf["__loopback__"]
+        comm = inf["__snmp_comm__"]
+        vern = inf["__snmp_vern__"]
+
+        for name in oids:
+            oid = soid.get(name) + "." + str(inf.ifIndex)
+            try:
+                _, _, value = sop.get(host, comm, vern, oid)
+                newinf[name] = value
+            except:
+                traceback.print_exc()
+                pass
+
+        inf["rti"] = tmprti
+
+    def load_static(self):
+        '''Collector information according to router's information'''
+
+        host, comm, vern = self.host, self.comm, self.vern
+
+        lines = sop.walk(host, comm, vern, soid.ipAdEntIfIndex)
+        for line in lines:
+            port_ipaddr, _, port_index = sop.splitline(
+                line, soid.ipAdEntIfIndex)
+            if not port_ipaddr:
+                continue
+
+            # XXX: ifindex number maybe same across different routers
+            inf = DotDict()
+            self.ports[port_index] = inf
+
+            inf["__loopback__"] = host
+            inf["__snmp_comm__"] = comm
+            inf["__snmp_vern__"] = vern
+            inf["__ipaddr__"] = port_ipaddr
+
+            oids = self.oid.get("static", [])
+            for name in oids:
+                oid = soid.get(name) + "." + str(port_index)
+                try:
+                    _, _, value = sop.get(host, comm, vern, oid)
+                    inf[name] = value
+                except:
+                    traceback.print_exc()
+                    pass
+
+    def load(self):
+        if not self.ports:
+            klog.d("load static for: %s" % self.host)
+            self.load_static()
+
+        klog.d("load runtime for: %s" % self.host)
+        for p in self.ports.values():
+            self.load_runtime(p)
+
+def load_router(equip):
+    loopback = equip.get("ip_str")
+    if not loopback:
+        return
+
+    r = Router(oid_static, oid_runtime, loopback, **equip)
+    r.load()
+    g_routers[loopback] = r
+
+    for p in r.ports.values():
+        g_port_fr_ipaddr.set(p, p.__ipaddr__)
+        g_port_fr_ifindex.set(p, p.__loopback__, p.ifIndex)
+
+
+# Scan all given routers
+def load_routers(ips):
+    global g_routers, g_port_fr_ipaddr, g_port_fr_ifindex
+
+    g_routers = {}
+    g_port_fr_ipaddr.clr()
+    g_port_fr_ifindex.clr()
+
+    for loopback in ips:
+        d = DotDict()
+        d.ip_str = loopback
+        d.community = "ctbri"
+        d.vern = "2c"
+        d.name = "Equip@%s" % loopback
+        d.uid = loopback
+        d.vendor = "FIXME"
+
+        load_router(d)
+
+
+class Collector(miethread.MieThread):
+    '''Thread pool to get data from snmp or netconf'''
+    __metaclass__ = ClsSingleton
+
+    def load_each(self, r):
+        klog.d("Loading ...:", r.host)
+        r.load()
+
+    def update(self):
+        '''Scan mango and generate ifindex number and port ipaddr'''
+        for r in g_routers.values():
+            DeferDo(self.load_each, r)
+
+    def __init__(self, name="SnmpCollector"):
+        klog.d("INTO Collector")
+        miethread.MieThread.__init__(self, name=name)
+        self.start()
+
+    def act(self):
+        '''Fetch and save to db'''
+
+        klog.d("Collector, acting...")
+        self.update()
+        return 10
+
+snmpCollector = Collector()
+
 
 
 ### ###########################################################
-# Read default configuration
+## Bottle: Request and Response
 #
 
-class MyConfCenter(confcenter.XConfCenter):
-
-    def __init__(self):
-        super(MyConfCenter, self).__init__(group="snmp", rw_cfg="./snmp.cfg")
-        self.alias_init()
-
-    def alias_init(self):
-        self.alias("CMDPORT", "cmdport", 9020)
-        self.alias("DEBUG", "debug", True)
-
-conf = MyConfCenter()
-
-
-### ###########################################################
-# Everything is a NetObject
-#
-import helper
-
-### ###########################################################
-## Request and Response
-#
-
+from bottle import get, post, put, run, request
+import json
 
 def idic():
     try:
@@ -120,295 +302,18 @@ def odic(indic):
 
     return odic
 
+# request_name <> func
+g_cmdmap = DotDict()
 
-### #####################################################################
-# Globals
-#
-
-oid_static = {
-    ".1.3.6.1.2.1.2.2.1.1": "ifIndex",
-    ".1.3.6.1.2.1.2.2.1.2": "ifDescr",
-    # ".1.3.6.1.2.1.2.2.1.3": "ifType",
-    # ".1.3.6.1.2.1.2.2.1.5": "ifSpeed",
-    ".1.3.6.1.2.1.31.1.1.1.15": "ifHighSpeed",
-    ".1.3.6.1.2.1.2.2.1.6": "ifPhysAddress",
-}
-
-oid_runtime = {
-    # ".1.3.6.1.2.1.2.2.1.10": "ifInOctets",
-    # ".1.3.6.1.2.1.31.1.1.1.6": "ifHCInOctets",
-    # ".1.3.6.1.2.1.2.2.1.11": "ifInUcastPkts",
-    # ".2.3.6.1.2.1.2.2.1.12": "ifInNUcastPkts",
-    # ".1.3.6.1.2.1.2.2.1.13": "ifInDiscards",
-    # ".1.3.6.1.2.1.2.2.1.14": "ifInErrors",
-    # ".1.3.6.1.2.1.2.2.1.15": "ifInUnknownProtos",
-    # ".1.3.6.1.2.1.2.2.1.16": "ifOutOctets",
-    ".1.3.6.1.2.1.31.1.1.1.10": "ifHCOutOctets",
-    # ".1.3.6.1.2.1.2.2.1.17": "ifOutUcastPkts",
-    # ".1.3.6.1.2.1.2.2.1.18": "ifOutNUcastPkts",
-    # ".1.3.6.1.2.1.2.2.1.19": "ifOutDiscards",
-    # ".1.3.6.1.2.1.2.2.1.20": "ifOutErrors",
-    # ".1.3.6.1.2.1.2.2.1.21": "ifOutQLen",
-}
-
-
-class SnmpPortInfo():
-    __metaclass__ = ClsSingleton
-
-    def __init__(self, oid_static, oid_runtime):
-        self.readyRouters = {}
-        self.portInfos = {}
-
-        # key = 'host:type:value'
-        self.shortcuts = {}
-
-        self.oid_static = oid_static
-        self.oid_runtime = oid_runtime
-
-    # Shortcut operation
-    #
-    # host : ip address of SNMP server
-    # type : oid/name of the entry
-    def sckey(self, host, type, value):
-        return host + ":" + type + ":" + value
-
-    def scget(self, host, type, value):
-        key = self.sckey(host, type, value)
-        #klog.d("key:%s" % key)
-        return self.shortcuts.get(key)
-
-    def scset(self, host, type, value, info):
-        key = self.sckey(host, type, value)
-        #klog.d("key:%s" % key)
-        self.shortcuts[key] = info
-
-    def splitline(self, line, oid):
-        try:
-            pfxlen = len(oid) + 1
-            segs = line.split()
-            if segs > 3 and segs[0].startswith(oid):
-                name = segs[0][pfxlen:]
-                type = segs[2][:-1]
-                value = segs[3]
-                return name, type, value
-        except:
-            pass
-        return None, None, "What????"
-
-    def snmpget(self, host, comm, vern, oid):
-        cmd = ['snmpget', '-Oe', '-On', '-v', vern, '-c', comm, host, oid]
-        lines = self.subcall(cmd)
-        return self.splitline(lines[0], oid)
-
-    def subcall(self, cmd):
-        # print "CMD:", cmd
-        try:
-            return subprocess.check_output(cmd).replace("\r", "\n").split("\n")
-        except:
-            klog.e("CMD:%s\r\nBT:%s" % (cmd, traceback.format_exc()))
-            return []
-
-    def load_port_info(self, inf):
-        oldrti = inf.get("rti", {})
-        tmprti = {}
-
-        newinf = {}
-        tmprti["old"] = oldrti.get("new", {})
-        tmprti["new"] = newinf
-
-        bandwidth = int(inf.get("ifHighSpeed", 10000000)) * 1000000
-
-        newinf["time"] = time.time()
-
-        host = inf["__loopback__"]
-        comm = inf["__snmp_comm__"]
-        vern = inf["__snmp_vern__"]
-        for oid_base, name in self.oid_runtime.items():
-            oid = oid_base + "." + inf['ifIndex']
-            _, _, value = self.snmpget(host, comm, vern, oid)
-            newinf[name] = value
-
-        try:
-            delta_bytes = int(tmprti["new"]["ifHCOutOctets"]) - \
-                int(tmprti["old"]["ifHCOutOctets"])
-            if not delta_bytes:
-                return
-
-            delta_seconds = tmprti["new"]["time"] - tmprti["old"]["time"]
-
-            tmprti["delta_bytes"] = delta_bytes
-            tmprti["delta_seconds"] = delta_seconds or 1
-
-            delta_bytes = (
-                delta_bytes + 0xffffffffffffffff) % 0xffffffffffffffff
-            tmprti["__delta_bytes___"] = delta_bytes
-            tmprti["__delta_bytes_MiB__"] = delta_bytes / 1024 / 1024
-            tmprti["__delta_bytes_GiB__"] = delta_bytes / 1024 / 1024 / 1024
-
-            utilization = 800.0 * delta_bytes / delta_seconds / bandwidth
-
-            tmprti["utilization"] = "{:.4f}".format(utilization)
-        except:
-            # traceback.print_exc()
-            pass
-
-        inf["rti"] = tmprti
-
-    def load_static(self, host, comm, vern):
-        '''Collector information according to router's information'''
-        oid_ipAdEntIfIndex = ".1.3.6.1.2.1.4.20.1.2"
-        oid_ifAdminStatusBase = ".1.3.6.1.2.1.2.2.1.7."
-
-        snmpwalk = [
-            'snmpwalk',
-            '-Oe',
-            '-On',
-            '-v',
-            vern,
-            '-c',
-            comm,
-            host,
-            oid_ipAdEntIfIndex]
-        lines = self.subcall(snmpwalk)
-        for line in lines:
-            port_ipaddr, _, port_index = self.splitline(
-                line, oid_ipAdEntIfIndex)
-            if not port_ipaddr:
-                continue
-
-            oid_ifAdminStatus = oid_ifAdminStatusBase + port_index
-            _, _, state = self.snmpget(host, comm, vern, oid_ifAdminStatus)
-
-            if state != "1":
-                print "Interface '%s' is down" % port_ipaddr
-                continue
-
-            #
-            # Get PortInfo
-            #
-
-            # XXX: ifindex number maybe same across different routers
-            hashkey = "%s#%s" % (host, port_index)
-            inf = self.portInfos.get(hashkey)
-            if not inf:
-                inf = DotDict()
-                self.portInfos[hashkey] = inf
-                klog.d(
-                    "New portInfo: host:%s, ipaddr:%s" %
-                    (host, port_ipaddr))
-            else:
-                klog.d(
-                    "Found portInfo: host:%s, ipaddr:%s" %
-                    (host, port_ipaddr))
-
-            inf["__loopback__"] = host
-            inf["__snmp_comm__"] = comm
-            inf["__snmp_vern__"] = vern
-            inf["__ipaddr__"] = port_ipaddr
-
-            for oid_base, name in self.oid_static.items():
-                oid = oid_base + "." + port_index
-                _, _, value = self.snmpget(host, comm, vern, oid)
-                inf[name] = value
-
-            #
-            # Shortcuts
-            #
-
-            #
-            self.save_ipaddr(port_ipaddr, inf)
-            self.save_ifindex(host, inf["ifIndex"], inf)
-
-            # Save to db
-            db.devs.replace_one({"_id": hashkey}, inf, True)
-
-            #
-            # Mark that this router has collected the static information
-            #
-            hashkeys = self.readyRouters.get(host, set())
-            hashkeys.add(hashkey)
-            self.readyRouters[host] = hashkeys
-
-    def fr_ipaddr(self, ipaddr):
-        return self.scget("", "ipaddr", ipaddr)
-
-    def save_ipaddr(self, ipaddr, inf):
-        self.scset("", "ipaddr", ipaddr, inf)
-
-    def fr_ifindex(self, host, ifindex):
-        return self.scget(host, "ifindex", ifindex)
-
-    def save_ifindex(self, host, ifindex, inf):
-        self.scset(host, "ifindex", ifindex, inf)
-
-    def load(self, host, comm, vern="2c"):
-        if host not in self.readyRouters:
-            self.load_static(host, comm, vern)
-
-        klog.d("load runtime for: %s" % host)
-
-        hashkeys = self.readyRouters.get(host, set()).copy()
-        for hashkey in hashkeys:
-            inf = self.portInfos.get(hashkey)
-            self.load_port_info(inf)
-
-    def load_each(self, dic):
-        host = dic["ip_str"]
-        comm = dic["community"]
-        vern = "2c"
-        self.load(host, comm, vern)
-
-    def update(self):
-        '''Scan mango and generate ifindex number and port ipaddr'''
-        for dic in db.equips.find({}, {"_id": 0, "ip_str": 1, "community": 1}):
-            DeferDo(self.load_each, dic)
-
-spi = SnmpPortInfo(oid_static, oid_runtime)
-spi.update()
-
-
-class Collector(miethread.MieThread):
-    '''Thread pool to get data from snmp or netconf'''
-    __metaclass__ = ClsSingleton
-
-    def __init__(self, name="SnmpCollector"):
-        klog.d("INTO Collector")
-        miethread.MieThread.__init__(self, name=name)
-        self.start()
-
-    def act(self):
-        '''Fetch and save to db'''
-        spi.update()
-        return 10
-
-snmpCollector = Collector()
-
+def cmd_default(calldic=None):
+    return "Bad request '%s'" % calldic.request
+g_cmdmap.default = cmd_default
 
 @post("/link/links")
 def docmd_ms_link_links():
     calldic = idic()
-
     klog.d(varfmt(calldic, "calldic"))
-
-    request = calldic["request"]
-
-    if request == "ms_link_set_links":
-        return ms_link_set_links(calldic)
-
-    if request == "ms_link_get_status":
-        return ms_link_get_status(calldic)
-
-    return "Bad request '%s'" % request
-
-'''
-db.equips:
-    ...
-
-db.ports:
-    Infomation from snmp scan and uid etc
-    XXX: vport?
-'''
-
+    return g_cmdmap.get(calldic.request, "default")(calldic)
 
 def ms_link_set_links(calldic=None):
     '''
@@ -452,79 +357,159 @@ def ms_link_set_links(calldic=None):
     '''
     calldic = calldic or idic()
 
-    db.equips.drop()
-    db.vlinks.drop()
     db.ports.drop()
 
+    db.equips.drop()
     equips = calldic["args"].get("equips", [])
-    vlinks = calldic["args"].get("vlinks", [])
-
     for r in equips:
         ports = r["ports"]
         del r["ports"]
 
+        DeferDo(load_router, r)
+
         r["_id"] = r["ip_str"]
-        db.equips.replace_one({"_id": r["_id"]}, r, True)
+        db.equips.replace_one({"_id": r["_id"]}, dict(r), True)
 
         for p in ports:
-            p["_id"] = p["ip_str"]
+            p["_id"] = "%s@%s" % (p["ip_str"], r["ip_str"])
             p["router"] = r["ip_str"]
-            db.ports.replace_one({"_id": p["_id"]}, p, True)
+            db.ports.replace_one({"_id": p["_id"]}, dict(p), True)
 
+            g_setport_fr_ip.set(p, p.ip_str)
+            g_setport_fr_uid.set(p, p.uid)
+
+    db.vlinks.drop()
+    vlinks = calldic["args"].get("vlinks", [])
     for l in vlinks:
         port = db.ports.find_one({"uid": l["sport"]})
         if port:
             port["bandwidth"] = l.get("bandwidth")
-            db.ports.replace_one({"_id": port["_id"]}, port, True)
+            db.ports.replace_one({"_id": port["_id"]}, dict(port), True)
 
     respdic = odic(calldic)
     res = json.dumps(respdic)
 
-    update_map()
-    spi.update()
+    # TODO: Save new information to db
+    snmpCollector.wakeup()
     return res
 
+g_cmdmap.ms_link_set_links = ms_link_set_links
 
-def update_map():
-    global map_r__ip_str, map_r__uid, map_p__ip_str, map_p__uid
-    map_r__ip_str = {}
-    map_r__uid = {}
-    map_p__ip_str = {}
-    map_p__uid = {}
+class SizeConv():
+    @classmethod
+    def tos(cls, size, unit=None, fp=False, pre=0):
+        '''toStr: 1234213412 => 1234213B => 1234KB => 1MB'''
 
-    for r in db.equips.find({}):
-        map_r__ip_str[r["ip_str"]] = r
-        map_r__uid[r["uid"]] = r
-
-    for p in db.ports.find({}):
-        map_p__ip_str[p["ip_str"]] = p
-        map_p__uid[p["uid"]] = p
-
-
-def get_utilization():
-    utilization = []
-
-    for k, v in spi.portInfos.items():
-        ipaddr = v.get("__ipaddr__")
-        dbport = db.ports.find_one({"ip_str": ipaddr})
-        if dbport:
-            try:
-                obj = DotDict()
-
-                obj.port_uid = dbport.get("uid")
-                obj.if_name = dbport.get("if_name")
-                obj.utilization = v["rti"].get("utilization", 0)
-
-                obj["__obj_mm__"] = v
-                obj["__obj_db__"] = dbport
-
-                utilization.append(obj)
-            except:
-                pass
+        if unit in 'kK':
+            size = float(size) / 1024
+        elif unit in 'mM':
+            size = float(size) / 1024 / 1024
+        elif unit in 'gG':
+            size = float(size) / 1024 / 1024 / 1024
+        elif unit in 'tT':
+            size = float(size) / 1024 / 1024 / 1024 / 1024
+        elif unit in 'pP':
+            size = float(size) / 1024 / 1024 / 1024 / 1024 / 1024
         else:
-            klog.e("Notfound: port.ip_str == %s" % ipaddr)
+            size = float(size)
 
-    return utilization
+        if fp:
+            pat = "{:.%df}" % pre if pre else "{:f}"
+            return pat.format(size)
+        else:
+            return int(size)
+
+
+    @classmethod
+    def frs(cls, size, fp=False):
+        '''frStr: 34712384K => 34712384*1024'''
+
+        if not size:
+            return 0
+
+        size = size.strip()
+
+        if size[-1] in 'kK':
+            size = float(size[:-1]) * 1024
+        elif size[-1] in 'mM':
+            size = float(size[:-1]) * 1024 * 1024
+        elif size[-1] in 'gG':
+            size = float(size[:-1]) * 1024 * 1024 * 1024
+        elif size[-1] in 'tT':
+            size = float(size[:-1]) * 1024 * 1024 * 1024 * 1024
+        elif size[-1] in 'pP':
+            size = float(size[:-1]) * 1024 * 1024 * 1024 * 1024 * 1024
+        else:
+            size = float(size)
+
+        return size if fp else int(size)
+
+sc = SizeConv()
+
+
+conf.alias("NETUSE_DEBUG", "netuse/debug", True)
+def netusage(asc=True):
+    out = []
+    for r in g_routers.values():
+        for p in r.ports.values():
+            klog.d(varfmt(p, "NetUsage", True))
+            try:
+
+                d = DotDict()
+
+                ipaddr = p.get("__ipaddr__")
+                dbport = db.ports.find_one({"ip_str": ipaddr})
+                if not dbport:
+                    klog.e("Port (%s) not found" % ipaddr)
+                    if not conf.NETUSE_DEBUG:
+                        continue
+                else:
+                    d.port_uid = dbport.get("uid")
+                    d.if_name = dbport.get("if_name")
+
+                    d["__obj_db__"] = dbport
+
+
+                new = int(p.rti.new.ifHCOutOctets)
+                old = int(p.rti.old.ifHCOutOctets)
+
+                diff_bytes = new - old
+
+                diff_seconds = p.rti.new.time - p.rti.old.time
+                bw_in_bytes = int(p.ifHighSpeed) * 1000000 / 8
+
+                d.utilization = 100.0 * diff_bytes / diff_seconds / bw_in_bytes
+
+                d.__diff_seconds = diff_seconds
+
+                b = sc.tos(diff_bytes, "b", False, 3)
+                k = sc.tos(diff_bytes, "k", True, 3)
+                m = sc.tos(diff_bytes, "m", True, 3)
+                g = sc.tos(diff_bytes, "g", True, 3)
+                text = "%sB or %sK or %sM or %sG Bytes" % (b, k, m, g)
+                d.__diff_size = text
+
+                b = sc.tos(bw_in_bytes, "b", False, 3)
+                k = sc.tos(bw_in_bytes, "k", True, 3)
+                m = sc.tos(bw_in_bytes, "m", True, 3)
+                g = sc.tos(bw_in_bytes, "g", True, 3)
+                text = "%sB or %sK or %sM or %sG Bytes" % (b, k, m, g)
+                d.__bandwidth = text
+
+                d.ip = p.__ipaddr__
+                d.loopback = p.__loopback__
+
+                setp = g_setport_fr_ip.get(d.ip)
+                if setp:
+                    d.port_uid = setp.uid
+                    d.if_name = setp.if_name
+
+                out.append(d)
+            except:
+                continue
+
+    mul = 10000000000 if asc else -10000000000
+    return sorted(out, lambda x, y: int(mul * (x.utilization - y.utilization)))
 
 
 def ms_link_get_status(calldic=None):
@@ -550,119 +535,242 @@ def ms_link_get_status(calldic=None):
                 {
                     "port_uid": "1000_2",
                     "utilization": 259.8
-                },
-
-                {
-                    "s_port_uid": "1000_2",
-                    "d_port_uid": "1000_2",
-                    "utilization": 259.8
                 }
             ]
         },
         "trans_id": 1464244693,
         "ts": "20160526143813"
     }
-
     '''
 
     calldic = calldic or idic()
-    varprt(calldic)
     respdic = odic(calldic)
 
-    respdic.result.utilization = get_utilization()
+    respdic.result.utilization = netusage(False)
 
     return json.dumps(respdic)
 
+g_cmdmap.ms_link_get_status = ms_link_get_status
+
+
+def ms_link_set_tunnel(calldic=None):
+    '''
+    The request:
+    {
+        "args": {
+            "tunnels": [
+                {
+                    "bandwidth": 1000,
+                    "from_router_name": "",
+                    "from_router_uid": "router0",
+                    "name": "Microhard_0",
+                    "path": [
+                        {},
+                        {}
+                    ],
+                    "to_router_name": "",
+                    "to_router_uid": "router4",
+                    "uid": "lsp_0",
+                    "user_data": "xxx"
+                }
+            ]
+        },
+        "request": "ms_link_set_tunnel",
+        "trans_id": 1464244693,
+        "ts": "20160526143813"
+    }
+    response:
+    {
+    }
+    '''
+
+    calldic = calldic or idic()
+    respdic = odic(calldic)
+    return json.dumps(respdic)
+
+g_cmdmap.ms_link_set_tunnel = ms_link_set_tunnel
+
+
+def ms_link_get_tunnel_bw(calldic=None):
+    '''
+    The request:
+    {
+        "args": {},
+        "request": "ms_link_get_tunnel_bw",
+        "trans_id": 1464244693,
+        "ts": "20160526143813"
+    }
+    response:
+    {
+        "err_code": 0,
+        "msg": "Demo response",
+        "response": "ms_link_get_tunnel_bw",
+        "result": {
+            "tunnel_bw": [
+                {
+                    "cur_bw": "yyy",
+                    "tunnel_uid": "xxx"
+                }
+            ]
+        },
+        "trans_id": 1464244693,
+        "ts": "20160526143813"
+    }
+    '''
+    calldic = calldic or idic()
+    respdic = odic(calldic)
+    return json.dumps(respdic)
+
+g_cmdmap.ms_link_get_tunnel_bw = ms_link_get_tunnel_bw
 
 ### #####################################################################
-# mcon etc
+## mcon etc
 #
-from roar import CallManager, CmdServer_Socket
-import roarcmds
+from roar.roar import CallManager, CmdServer_Socket
+from roar import roarcmds
 
-callman = CallManager()
+callman = CallManager(name="SNMP")
 cmdserv = CmdServer_Socket(callman, conf.CMDPORT)
 cmdserv.start()
 
-callman.addcmd(roarcmds.docmd_dr, "dr")
-callman.addcmd(roarcmds.docmd_stat, "stat")
-
-roarcmds.ConfCommands(conf, callman)
+roarcmds.ExtCommands(callman, conf)
 
 
 @callman.deccmd()
-def status(cmdctx, calldic):
-    opt = calldic.get_opt("l")
-    limit = opt[-1] if opt else "1000000"
+def pl(cmdctx, calldic):
+    '''Port List
 
-    arg = calldic.get_args()
-    pat = arg[0] if arg else None
+    .opt -i byIpAddr
+    .opt -l byLoopback
+    .opt -as byAdminState
+    Query by state, 1 for up, others for down
+    .opt -os byOperState
+    Query by state, 1 for up, others for down
+    .opt --s pat :.*
+    Use re to filter out the wanted port.
 
-    res = get_utilization()
-    if pat:
-        lis = []
-        for r in res:
-            if str(r).find(pat) >= 0:
-                lis.append(r)
-    else:
-        lis = res
-
-    lis.sort(key=lambda x: float(x.get("utilization", 0)), reverse=True)
-
-    return lis[:int(limit)]
-
-
-@callman.deccmd()
-def map_r__ip_str(cmdctx, calldic):
-    return map_r__ip_str
-
-
-@callman.deccmd()
-def map_r__uid(cmdctx, calldic):
-    return map_r__uid
-
-
-@callman.deccmd()
-def map_p__ip_str(cmdctx, calldic):
-    return map_p__ip_str
-
-
-@callman.deccmd()
-def map_p__uid(cmdctx, calldic):
-    return map_p__uid
-
-
-@callman.deccmd()
-def portInfos(cmdctx, calldic):
-    return spi.portInfos
-
-
-@callman.deccmd()
-def restart(cmdctx, calldic):
-    def seeya(cookie):
-        time.sleep(1)
-        os._exit(0)
-
-    DeferDo(seeya)
-    return "Bye"
-
-
-
-def strip_uniq_from_argv():
-    '''The --uniq is used to identify a process.
-
-    a.py --uniq=2837492392994857 argm argn ... argz
-    ps aux | grep "--uniq=2837492392994857" | awk '{print $2}' | xargs kill -9
+    TODO: should and --include and --exclude option.
+    TODO: should and --include and --exclude option.
+    TODO: should and --include and --exclude option.
+    TODO: should and --include and --exclude option.
     '''
+    ports = []
+    args = calldic.get_args() or []
 
-    for a in sys.argv:
-        if a.startswith("--uniq="):
-            sys.argv.remove(a)
+    pat = calldic.nth_opt("s", 0, ".*")
+    pat = re.compile(pat)
+
+    if calldic.get_opt("i"):
+        field = "__ipaddr__"
+    elif calldic.get_opt("l"):
+        field = "__loopback__"
+    elif calldic.get_opt("as"):
+        field = "ifAdminStatus"
+    elif calldic.get_opt("os"):
+        field = "ifOperStatus"
+    else:
+        field = "__ipaddr__"
+
+    for r in g_routers.values():
+        for p in r.ports.values():
+            if not args or str(p[field]) in args:
+                ports.append(p)
+
+    res = [p for p in ports if pat.search(str(p))]
+    return res
+
+
+@callman.deccmd()
+def rl(cmdctx, calldic):
+    '''Routers List
+
+    .opt --s searchpat :.*
+    '''
+    lis = []
+    args = calldic.get_args() or []
+
+    pat = calldic.nth_opt("s", 0, ".*")
+    pat = re.compile(pat)
+
+    for r in g_routers.values():
+        if not args or r.host in args:
+            lis.append(r)
+
+    res = [r for r in lis if pat.search(str(r))]
+    return res
+
+
+@callman.deccmd()
+def rload(cmdctx, calldic):
+    '''Routers load'''
+    for r in g_routers.values():
+        r.load()
+    return "OK"
+
+
+@callman.deccmd()
+def util(cmdctx, calldic):
+    '''Bandwidth usage
+
+    Show Bandwidth usage.
+    a. aaaaaaaaaaaa
+    b. aaaaaaaaaaaa
+
+    .opt --s searchPat :.*
+    .arg count
+
+
+
+
+    How many count should be returned.
+    How many count should be returned.
+
+
+    How many count should be returned.
+    How many count should be returned.
+
+
+
+    .arg fake
+    Show this part
+
+    .arg fake2
+
+
+
+
+    '''
+    cnt = calldic.nth_arg(0) or 1000000
+    cnt = int(cnt)
+
+    pat = calldic.nth_opt("s", 0, ".*")
+    pat = re.compile(pat)
+
+    utils = netusage(False)
+
+    res = [i for i in utils if pat.search(str(i))]
+    return res[:cnt]
+
+@callman.deccmd()
+def iplist(cmdctx, calldic):
+    '''Show all ip address return by scan operation'''
+    ips = []
+    for r in g_routers.values():
+        ips.extend([p["__ipaddr__"] for p in r.ports.values()])
+    return sorted(ips, lambda x,y: int(x.split(".")[0]) - int(y.split(".")[0]))
 
 
 if __name__ == "__main__":
-    strip_uniq_from_argv()
+    # map(lambda x: klog.d("#" * x), range(10, 100, 10))
+    ips = sys.argv[1:]
+    if ips:
+        load_routers(ips)
+        topo_scan(g_routers)
+    else:
+        ips = []
+        for dic in db.equips.find({}, {"_id": 0, "ip_str": 1, "community": 1}):
+            ips.append(dic.get("ip_str"))
+        load_routers(ips)
 
-    update_map()
     run(server='paste', host='0.0.0.0', port=10000, debug=True)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 #
-#  Copyright 2016 China Telecommunication Co., Ltd.
+#  Copyright 2016-2017 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -20,47 +20,94 @@
 import os
 import sys
 import shutil
-import datetime
-
-sys.path.append("../common")
-
-os.environ["KLOG_DFCFG"] = os.environ.get("KLOG_DFCFG", "/tmp/netflow.dfcfg")
-os.environ["KLOG_RTCFG"] = os.environ.get("KLOG_RTCFG", "/tmp/netflow.rtcfg")
-os.environ["KLOG_MASK"] = os.environ.get("KLOG_MASK", "facewindFHNS")
-
-from utils import *
-import confcenter
-from xlogger import *
-from singleton import *
-from bprint import *
-from deferdo import *
-
-from bottle import get, post, put, delete, run, request
-
-import miethread
-
 import json
 import time
+import traceback
+import subprocess
+import re
+
+sys.path.append("../mie")
+
+from confcenter import XConfCenter
+import miethread
+
+from logtan import logtan_mongodb as logtan
+from singleton import AppSingleton, ClsSingleton
+
+from bprint import varprt, varfmt
+from dotdict import DotDict
+from xlogger import klog
+from deferdo import DeferDo
+from maptan import MapTan
+from kstat import kstat, kstatone
+from logmon import KLogMon
+from snmpoper import SnmpOper as sop
+
+import nfmon
+
 
 ### ###########################################################
 ## Singleton and klog
 #
-### Appsingleton("/tmp/netflow.pid", "Singleton check failed: netflow already exists")
-# setdebugable()
+AppSingleton("/tmp/netflow.pid", "Singleton check failed: netflow already exists")
 
-klog.to_stdout()
-klog.to_file("/tmp/netflow_%Y%R_%I.log")
+nfp_recs = kstatone("nfp.recs")
+nfp_recs_ok = kstatone("nfp.recs.ok")
+nfp_recs_ng = kstatone("nfp.recs.ng")
+
+lc_loops = kstatone("lc.loops")
+lc_logs = kstatone("lc.logs")
+
+
+# Journal for Netflow
+logtan.cfg(db="jnetflow")
+
+import functools
+jni = functools.partial(logtan.i, mod="Netflow")
+jnw = functools.partial(logtan.w, mod="Netflow")
+jne = functools.partial(logtan.e, mod="Netflow")
+jnf = functools.partial(logtan.f, mod="Netflow")
+
+### ###########################################################
+## Read default configuration
+#
+
+alias = (
+        ("CMDPORT", "cmdport", 9021),
+
+        # jnca/log/fr: Where to load jnca log files
+        # jnca/log/to: Where to backup jnca log files
+        ("JNCA_LOG_FR", "jnca/log/fr", "/home/auv/jnca"),
+        ("JNCA_LOG_TO", "jnca/log/to", "/home/auv/jnca/bak/"),
+        ("JNCA_THREAD_WAIT", "jnca/thread/wait", 60),
+
+        ("SAMPLE_RATE", "sample/rate", 1000),
+
+        # Bottle web service
+        ("BOTTLE_PORT", "bottle/port", 10001),
+        ("BOTTLE_DEBUG", "bottle/debug", False),
+
+        ("LOG_CLEANER_TTL", "logcleaner/ttl", 60*10),
+
+        # age/max: Max time between to same log items
+        # age/skip: Drop too old record for get status
+        ("DB_LOG_AGE_MAX", "db/log/age/max", 300),
+        ("DB_LOG_AGE_SKIP", "db/log/age/skip", 180),
+        )
+
+conf = XConfCenter(group="netflow", rw_cfg="./netflow.cfg", alias=alias)
+KLogMon(conf)
 
 import pymongo
 client = pymongo.MongoClient()
 db = client.netflow
 
-db.logs.ensure_index([("_id", pymongo.ASCENDING),
+db.logs.create_index([("_id", pymongo.ASCENDING),
                       ("loopback", pymongo.ASCENDING),
                       ("nLoopback", pymongo.ASCENDING),
-                      ("oPortIp", pymongo.ASCENDING),
-                      ("nPortIp", pymongo.ASCENDING)])
-db.vlinks.ensure_index([("_id", pymongo.ASCENDING),
+                      ("port.output", pymongo.ASCENDING),
+                      ("port.nexthop", pymongo.ASCENDING)])
+db.vlinks.create_index([("_id", pymongo.ASCENDING),
                         ("sportip", pymongo.ASCENDING),
                         ("dportip", pymongo.ASCENDING)])
 
@@ -95,6 +142,10 @@ db.links
     *
 '''
 
+oid_ipAdEntIfIndex = ".1.3.6.1.2.1.4.20.1.2"
+oid_ifAdminStatusBase = ".1.3.6.1.2.1.2.2.1.7."
+oid_ifOperStatusBase = ".1.3.6.1.2.1.2.2.1.8."
+
 oid_static = {
     ".1.3.6.1.2.1.2.2.1.1": "ifIndex",
     # ".1.3.6.1.2.1.2.2.1.2": "ifDescr",
@@ -122,6 +173,9 @@ oid_runtime = {
 }
 
 
+### ###########################################################
+## SNMP
+#
 class SnmpPortInfo():
     __metaclass__ = ClsSingleton
 
@@ -140,43 +194,15 @@ class SnmpPortInfo():
     # host : ip address of SNMP server
     # type : oid/name of the entry
     def sckey(self, host, type, value):
-        return host + ":" + type + ":" + value
+        return host + ":" + str(type) + ":" + str(value)
 
     def scget(self, host, type, value):
         key = self.sckey(host, type, value)
-        #klog.d("key:%s" % key)
         return self.shortcuts.get(key)
 
     def scset(self, host, type, value, info):
         key = self.sckey(host, type, value)
-        #klog.d("key:%s" % key)
         self.shortcuts[key] = info
-
-    def splitline(self, line, oid):
-        try:
-            pfxlen = len(oid) + 1
-            segs = line.split()
-            if segs > 3 and segs[0].startswith(oid):
-                name = segs[0][pfxlen:]
-                type = segs[2][:-1]
-                value = segs[3]
-                return name, type, value
-        except:
-            pass
-        return None, None, "What????"
-
-    def snmpget(self, host, comm, vern, oid):
-        cmd = ['snmpget', '-Oe', '-On', '-v', vern, '-c', comm, host, oid]
-        lines = self.subcall(cmd)
-        return self.splitline(lines[0], oid)
-
-    def subcall(self, cmd):
-        # print "CMD:", cmd
-        try:
-            return subprocess.check_output(cmd).replace("\r", "\n").split("\n")
-        except:
-            klog.e("CMD:%s\r\nBT:%s" % (cmd, traceback.format_exc()))
-            return []
 
     def load_port_info(self, inf):
         oldrti = inf.get("rti", {})
@@ -195,7 +221,7 @@ class SnmpPortInfo():
         vern = inf["__snmp_vern__"]
         for oid_base, name in self.oid_runtime.items():
             oid = oid_base + "." + inf['ifIndex']
-            _, _, value = self.snmpget(host, comm, vern, oid)
+            _, _, value = sop.get(host, comm, vern, oid)
             newinf[name] = value
 
         try:
@@ -226,31 +252,21 @@ class SnmpPortInfo():
 
     def load_static(self, host, comm, vern):
         '''Collector information according to router's information'''
-        oid_ipAdEntIfIndex = ".1.3.6.1.2.1.4.20.1.2"
-        oid_ifAdminStatusBase = ".1.3.6.1.2.1.2.2.1.7."
 
-        snmpwalk = [
-            'snmpwalk',
-            '-Oe',
-            '-On',
-            '-v',
-            vern,
-            '-c',
-            comm,
-            host,
-            oid_ipAdEntIfIndex]
-        lines = self.subcall(snmpwalk)
+        downports = []
+
+        lines = sop.walk(host, comm, vern, oid_ipAdEntIfIndex)
         for line in lines:
-            port_ipaddr, _, port_index = self.splitline(
+            port_ipaddr, _, port_index = sop.splitline(
                 line, oid_ipAdEntIfIndex)
             if not port_ipaddr:
                 continue
 
-            oid_ifAdminStatus = oid_ifAdminStatusBase + port_index
-            _, _, state = self.snmpget(host, comm, vern, oid_ifAdminStatus)
+            oid_ifAdminStatus = oid_ifAdminStatusBase + str(port_index)
+            _, _, state = sop.get(host, comm, vern, oid_ifAdminStatus)
 
-            if state != "1":
-                print "Interface '%s' is down" % port_ipaddr
+            if state != 1:
+                downports.append(port_ipaddr)
                 continue
 
             #
@@ -277,8 +293,8 @@ class SnmpPortInfo():
             inf["__ipaddr__"] = port_ipaddr
 
             for oid_base, name in self.oid_static.items():
-                oid = oid_base + "." + port_index
-                _, _, value = self.snmpget(host, comm, vern, oid)
+                oid = oid_base + "." + str(port_index)
+                _, _, value = sop.get(host, comm, vern, oid)
                 inf[name] = value
 
             #
@@ -290,7 +306,7 @@ class SnmpPortInfo():
             self.save_ifindex(host, inf["ifIndex"], inf)
 
             # Save to db
-            db.devs.replace_one({"_id": hashkey}, inf, True)
+            db.devs.replace_one({"_id": hashkey}, dict(inf), True)
 
             #
             # Mark that this router has collected the static information
@@ -298,6 +314,9 @@ class SnmpPortInfo():
             hashkeys = self.readyRouters.get(host, set())
             hashkeys.add(hashkey)
             self.readyRouters[host] = hashkeys
+
+        if downports:
+            klog.e("(%s) DownPorts: %s" % (host, downports))
 
     def fr_ipaddr(self, ipaddr):
         return self.scget("", "ipaddr", ipaddr)
@@ -332,6 +351,7 @@ class SnmpPortInfo():
 
     def load(self, host, comm, vern="2c"):
         if host not in self.readyRouters:
+            klog.d("load static for: %s" % host)
             self.load_static(host, comm, vern)
 
         klog.d("load runtime for: %s" % host)
@@ -350,30 +370,15 @@ class SnmpPortInfo():
     def update(self):
         '''Scan mango and generate ifindex number and port ipaddr'''
         for dic in db.equips.find({}, {"_id": 0, "ip_str": 1, "community": 1}):
+            klog.d(varfmt(dic))
             DeferDo(self.load_each, dic)
 
 spi = SnmpPortInfo(oid_static, oid_runtime)
 
 
-class Counter():
-
-    def __init__(self, name=None):
-        self.name = name or "ZBD"
-        self.dic = {}
-
-    def clr(self):
-        self.dic = {}
-
-    def add(self, ent, inc=1):
-        self.dic[ent] = self.dic.get(ent, 0) + inc
-
-    def dic(self):
-        return self.dic
-
-    def dmp(self):
-        varprt(self.dic, self.name)
-
-
+### ###########################################################
+## LogCleaner - Cleanup old log items
+#
 class LogCleaner(miethread.MieThread):
     __metaclass__ = ClsSingleton
 
@@ -387,270 +392,159 @@ class LogCleaner(miethread.MieThread):
         self.wakeup()
 
     def act(self):
-        ctime = datetime.datetime.now() - datetime.timedelta(seconds=self.keeptime)
+        lc_loops.inc()
 
-        query = {"ctime": {"$lt": ctime}}
+        ctime = time.time() - self.keeptime
+        query = {"time.log": {"$lt": ctime}}
         res = db.logs.delete_many(query)
         klog.d("%s" % varfmt(query))
         klog.d("%d deleted." % res.deleted_count)
 
+        lc_logs.inc(res.deleted_count)
+
         return self.keeptime * 9 / 10
 
-lc = LogCleaner(60 * 45)
+lc = LogCleaner(conf.LOG_CLEANER_TTL)
 
 
-class LogFileProcessor(miethread.MieThread):
-    __metaclass__ = ClsSingleton
 
-    def __init__(self, logdir, bakdir=None):
-        self.logdir = logdir
-        self.bakdir = bakdir
-
-        miethread.MieThread.__init__(self)
-        self.start()
-
-        self.nglis_iPortIp = Counter("NGLIST::iPortIp")
-        self.nglis_oPortIp = Counter("NGLIST::oPortIp")
-        self.nglis_nLoopback = Counter("NGLIST::nLoopback")
-        self.nglis_ipaddr = Counter("NGLIST::ipAddr")
-
-    def act(self):
-        files = self.get_files(self.logdir) or []
-
-        varfmt(files)
-
-        klog.d("%d files in queue" % len(files))
-        tmq = time.time()
-        self.parse(files)
-        tmh = time.time()
-        klog.d("%d files processed, in time %f" % (len(files), tmh - tmq))
-
-        return 60
-
-    def get_files(self, dir):
-        '''Get all the log files.
-        NOTE: the last one is skipped, cause it may been written now'''
-
-        def fnameok(s):
-            l = len(s)
-            return l >= 27 and l <= 35 and s.endswith(".txt")
-
+### ###########################################################
+## NFRecProcessor - Server to process NF packages
+#
+class NFRecProcessor():
+    @staticmethod
+    def rec2dic(routerip, rec):
         try:
-            for root, dirs, files in os.walk(dir):
-                # lis = sorted(filter(lambda f: f.endswith(".txt"), files))[0:-1]
-                lis = filter(fnameok, files)
-                lis.sort(key=lambda x: x[-19:-4])
-                res = [os.path.join(root, f) for f in lis[0:-1]]
+            src_addr = "%d.%d.%d.%d" % (rec.src_addr_a, rec.src_addr_b, rec.src_addr_c, rec.src_addr_d)
+            nexthop = "%d.%d.%d.%d" % (rec.nexthop_a, rec.nexthop_b, rec.nexthop_c, rec.nexthop_d)
+            dst_addr = "%d.%d.%d.%d" % (rec.dst_addr_a, rec.dst_addr_b, rec.dst_addr_c, rec.dst_addr_d)
 
-                return res
-        except:
-            return []
+            in_if = rec.in_if
+            out_if = rec.out_if
 
-    def gen_log(self, line):
-        '''
-        flowInfo:
-            srcAddr
-            srcPort
-            dstAddr
-            dstPort
+            packets = rec.packets
+            octets = rec.octets
 
-            bytes
-            ctime
+            first = rec.first
+            last = rec.last
 
-        equip:
-            loopback - The port address send this netflow package, This Router IP or loopback
-            iportIp - Input Port IP
-            oportIp - Output Port IP
-            nportIp - Next Port Ip, NextHop
+            src_port = rec.src_port
+            dst_port = rec.dst_port
 
-            nrouterip - Next Routers IP (snmp host IP)
-        '''
-        try:
-            segs = line.strip().split(",")
-            if not segs or len(segs) < 14:
-                return None
+            # tcp_flags = rec.tcp_flags
+            # ip_proto = rec.ip_proto
+            # tos = rec.tos
+            # src_as = rec.src_as
+            # dst_as = rec.dst_as
+            # src_mask = rec.src_mask
+            # dst_mask = rec.dst_mask
 
             # XXX: Skip if nextHop is 0.0.0.0
-            if segs[4] == "0.0.0.0":
-                return None
+            if nexthop == "0.0.0.0":
+                klog.w("Skip when nextHop is 0.0.0.0: (%s)" % str(rec))
+                return None, "nextHop is 0.0.0.0"
 
             # XXX: Inf is the port send netflow package
-            # segs[0] is not must the loopback address
-            inf = spi.scget("", "ipaddr", segs[0])
+            # routerip is not must the loopback address
+            inf = spi.scget("", "ipaddr", routerip)
             if not inf:
-                # print "ERR: Not found:", segs[0]
-                self.nglis_ipaddr.add(segs[0])
-                return None
+                klog.e("ERR: Not found:", routerip)
+                return None, "Loopback not exists"
 
             loopback = inf["__loopback__"]
 
-            '''
-            if segs[2] == "10.0.148.15" and segs[3] == "10.0.248.25" and segs[4] == "10.0.111.1":
-                print "xxxxxxxxxxxxxxxxxxxxx"
-            '''
-
-            #
-            # dic.ctime - timestamp for this record
-            # dic.rpt
-            #
             dic = DotDict()
 
-            dic["loopback"] = loopback
-            dic["ctime"] = datetime.datetime.strptime(
-                segs[1], "%Y-%m-%d %H:%M:%S")
+            dic.loopback.cur = loopback
 
             #
             # Flow Info
             #
-            dic["srcAddr"] = segs[2]
-            dic["dstAddr"] = segs[3]
+            dic.addr.src = src_addr
+            dic.addr.dst = dst_addr
 
-            # segs[4] is nextHop
-            dic["nPortIp"] = segs[4]
-            tmp = spi.scget("", "ipaddr", segs[4])
+            dic.port.nexthop = nexthop
+            tmp = spi.scget("", "ipaddr", nexthop)
             if tmp:
-                dic["nLoopback"] = tmp["__loopback__"]
+                dic.loopback.nxt = tmp["__loopback__"]
             else:
-                # print "nLoopback: getFromIP NG: ", segs[4]
-                self.nglis_nLoopback.add(segs[4])
-                return None
+                dic.loopback.nxt = "<%s: NotFound>" % (nexthop)
+                klog.e("NotFound: nexthop: ", nexthop)
+                return None, "nexthop not exists"
 
-            ### dic["dpkt"] = segs[5]
-            dic["bytes"] = int(segs[6])
+            dic["bytes"] = octets
 
-            ### dic["srcMask"] = segs[7]
-            ### dic["dstMask"] = segs[8]
-
-            ### dic["ifIndexOut"] = segs[9]
-            tmp = spi.scget(loopback, "ifindex", segs[9])
+            tmp = spi.scget(loopback, "ifindex", out_if)
             if tmp:
-                dic["oPortIp"] = tmp["__ipaddr__"]
+                dic.port.output = tmp["__ipaddr__"]
             else:
-                # print "iPortIp: getFromIP NG: ", segs[9]
-                self.nglis_oPortIp.add(segs[9])
+                dic.port.output = "<%s@%s>" % (out_if, loopback)
+                klog.e("NotFound: %s@%s" % (out_if, loopback))
 
-            ### dic["ifIndexIn"] = segs[10]
-            tmp = spi.scget(loopback, "ifindex", segs[10])
+            tmp = spi.scget(loopback, "ifindex", in_if)
             if tmp:
-                dic["iPortIp"] = tmp["__ipaddr__"]
+                dic.port.input = tmp["__ipaddr__"]
             else:
-                # print "oPortIp: getFromIP NG: ", segs[10]
-                self.nglis_iPortIp.add(segs[10])
+                dic.port.input = "<%s@%s>" % (in_if, loopback)
+                klog.e("NotFound: %s@%s" % (in_if, loopback))
 
-            ### dic["srcPort"] = segs[11]
-            ### dic["dstPort"] = segs[12]
+            dic["_id"] = "{loopback.cur}::{addr.src}_to_{addr.dst}".format(**dic)
 
-            ### dic["version"] = segs[13]
+            diff = last - first
+            bps = 8.0 * int(dic["bytes"]) * conf.SAMPLE_RATE / diff * 1000
+            dic["bps"] = int(bps)
 
-            dic["_id"] = "{loopback}::{srcAddr}_{dstAddr}".format(**dic)
+            dic.time.last = last
+            dic.time.first = first
 
-            return dic
+            dic.time.log = time.time()
+
+            return dic, None
         except:
-            traceback.print_exc()
-            return None
+            klog.e(traceback.format_exc())
+            klog.e("Except rec:", varfmt(rec, color=True))
+            return None, "Except: %s" % traceback.format_exc()
 
-    def parse(self, files):
-        self.nglis_iPortIp.clr()
-        self.nglis_oPortIp.clr()
-        self.nglis_nLoopback.clr()
-        self.nglis_ipaddr.clr()
+    @staticmethod
+    def savedic(dic):
+        klog.d("Saving: ", varfmt(dic, color=True))
+        db.logs.replace_one({"_id": dic["_id"]}, dic.todic(), True)
 
-        allcnt = 0
-        allrev = 0
-        alltmq = time.time()
-        for name in files:
-            tmq = time.time()
-            cnt = 0
-            rev = 0
-            with open(name, "rt") as f:
-                lnr = 0
-                for l in f:
-                    lnr += 1
-                    dic = self.gen_log(l)
-                    if not dic:
-                        continue
+nfrp = NFRecProcessor
 
-                    dic["logfile"] = name
-                    dic["lnr"] = lnr
 
-                    cnt += 1
-                    # 1. Got the old with same flow
-                    # 2. Calc the bps
-                    bps = 0
-                    x = db.logs.find_one({"_id": dic["_id"]})
-                    # x = db.logs.find({"_id": dic["_id"]}).sort([("ctime",pymongo.ASCENDING)]).limit(1)
-                    if x:
-                        oldtime = x["ctime"]
-                        newtime = dic["ctime"]
 
-                        diff = (newtime - oldtime).total_seconds() or 1.0
-                        bps = 8.0 * int(dic["bytes"]) * 5000 / diff
 
-                        dic["oldtime"] = x["ctime"]
-                        dic["oldlogfile"] = x["logfile"]
-                        dic["oldln"] = x["lnr"]
-                        dic["deltaSeconds"] = diff
+### ###########################################################
+## NFProcessor - Act as a NF Server
+#
+class NFProcessor(miethread.MieThread):
+    def __init__(self, conf, port=2055):
+        self.conf = conf
+        self.nfmon = nfmon.NFServer(port, self.onflow)
 
-                        if bps < 0:
-                            rev += 1
-                            # XXX: only for test
-                            break
-                            print "..... oldLog :", x.get("logfile")
-                            print "..... newLog :", dic.get("logfile")
-                            print "...... oldLn :", x.get("lnr")
-                            print "...... newLn :", dic.get("lnr")
-                            print ".... oldtime :", oldtime
-                            print ".... newtime :", newtime
-                            print "....... diff :", diff
-                            print "...... bytes :", dic["bytes"]
-                            print
-                    else:
-                        print dic
-                        klog.d("No log found: %s" % str({"_id": dic["_id"]}))
+        miethread.MieThread.__init__(self)
+        self.start()
 
-                    dic["bps"] = bps
+    def act(self):
+        self.nfmon.run()
+        return 0
 
-                    if dic:
-                        # print "{routerIp}: {srcAddr} ->
-                        # {dstAddr}".format(**dic)
-                        db.logs.replace_one({"_id": dic["_id"]}, dic, True)
+    def onflow(self, routerip, rec):
+        dic, msg = nfrp.rec2dic(routerip, rec)
+        nfp_recs.inc()
+        if dic:
+            nfp_recs_ok.inc()
+            nfrp.savedic(dic)
+        else:
+            nfp_recs_ng.inc()
+            klog.e("Error from rec2dic: ", msg)
 
-            # XXX: Only for testing
-            tmh = time.time()
-            '''
-            klog.d("<<< Processing: '%s', lines: %04d, cost:%f, eachCost:%f" %
-                   (name, cnt, (tmh - tmq), (tmh - tmq) / (cnt + 1)))
-            '''
-
-            allcnt += cnt
-            allrev += rev
-
-            # Backup after processed
-            if self.bakdir:
-                try:
-                    shutil.move(name, self.bakdir)
-                except:
-                    print "move ng:", name
-                    try:
-                        os.remove(name)
-                    except:
-                        print "remove ng:", name
-
-        alltmh = time.time()
-
-        self.nglis_iPortIp.dmp()
-        self.nglis_oPortIp.dmp()
-        self.nglis_nLoopback.dmp()
-        self.nglis_ipaddr.dmp()
-
-        print "allcnt:", allcnt
-        print "allrev:", allrev
-        print "alltme:", (alltmh - alltmq)
 
 ### ###########################################################
 ## Request and Response
 #
-
+from bottle import get, post, put, delete, run, request
 
 def idic():
     try:
@@ -680,7 +574,7 @@ def odic(indic):
 
 def getequip(uid):
     try:
-        return db.equips.find_one({"uid": uid})
+        return DotDict(db.equips.find_one({"uid": uid}))
     except:
         traceback.print_exc()
         return {}
@@ -688,7 +582,7 @@ def getequip(uid):
 
 def getvlink(uid):
     try:
-        return db.vlinks.find_one({"uid": uid})
+        return DotDict(db.vlinks.find_one({"uid": uid}))
     except:
         traceback.print_exc()
         return {}
@@ -696,7 +590,7 @@ def getvlink(uid):
 
 def getport(uid):
     try:
-        return db.ports.find_one({"uid": uid})
+        return DotDict(db.ports.find_one({"uid": uid}))
     except:
         traceback.print_exc()
         return {}
@@ -718,14 +612,6 @@ def docmd_flow():
 
     return "Bad request '%s'" % request
 
-
-map_uid_router = {}
-map_ip_router = {}
-
-map_portuid_router = {}
-map_portuid_port = {}
-map_portip_router = {}
-map_portip_port = {}
 
 
 def ms_flow_set_topo(calldic=None):
@@ -801,6 +687,16 @@ def ms_flow_set_topo(calldic=None):
     '''
     calldic = calldic or idic()
 
+    #
+    # Shortcuts
+    #
+    map_ip_router = {}                  # router ip_str
+    map_portuid_port = {}               # port_uid => port
+
+
+    #
+    # Empty DB
+    #
     db.equips.drop()
     db.vlinks.drop()
     db.ports.drop()
@@ -809,43 +705,44 @@ def ms_flow_set_topo(calldic=None):
     vlinks = calldic["args"]["vlinks"]
 
     for r in equips:
-        map_uid_router[r["uid"]] = r
         map_ip_router[r["ip_str"]] = r
 
         ports = r["ports"]
         del r["ports"]
 
         r["_id"] = r["ip_str"]
-        db.equips.replace_one({"_id": r["_id"]}, r, True)
+        db.equips.replace_one({"_id": r["_id"]}, dict(r), True)
 
         for p in ports:
-            map_portuid_router[p["uid"]] = r
             map_portuid_port[p["uid"]] = p
-            map_portip_router[p["ip_str"]] = r
-            map_portip_port[p["ip_str"]] = p
 
             p["_id"] = p["ip_str"]
             p["router"] = r["ip_str"]
-            db.ports.replace_one({"_id": p["_id"]}, p, True)
+            db.ports.replace_one({"_id": p["_id"]}, dict(p), True)
 
             # TODO: Add ifindex and ip_str to each port if miss that
 
     for l in vlinks:
-        l["_id"] = l["uid"]
+        try:
+            l["_id"] = l["uid"]
 
-        # XXX: >>> Additional information
-        p = map_portuid_port.get(l.get("sport"))
-        l["sportip"] = p.get("ip_str", "(Empty)")
-        r = map_ip_router.get(p.get("router"))
-        l["sloopbackip"] = r.get("ip_str")
+            # XXX: >>> Additional information
+            p = map_portuid_port.get(l.get("sport"))
+            l["sportip"] = p.get("ip_str", "(Empty)")
+            r = map_ip_router.get(p.get("router"))
+            l["sloopbackip"] = r.get("ip_str")
 
-        p = map_portuid_port.get(l.get("dport"))
-        l["dportip"] = p.get("ip_str", "(Empty)")
-        r = map_ip_router.get(p.get("router"))
-        l["dloopbackip"] = r.get("ip_str")
+            p = map_portuid_port.get(l.get("dport"))
+            l["dportip"] = p.get("ip_str", "(Empty)")
+            r = map_ip_router.get(p.get("router"))
+            l["dloopbackip"] = r.get("ip_str")
 
-        # XXX: <<< Additional information
-        db.vlinks.replace_one({"_id": l["_id"]}, l, True)
+            # XXX: <<< Additional information
+            db.vlinks.replace_one({"_id": l["_id"]}, dict(l), True)
+
+        except:
+            traceback.print_exc()
+            pass
 
     respdic = odic(calldic)
     res = json.dumps(respdic)
@@ -866,6 +763,14 @@ def btog(n):
     return float(n) / 1024 / 1024 / 1024
 
 
+def equip_fr_port_ip(portip):
+    # port_uid -> port
+    tmp = spi.scget("", "ipaddr", portip)
+    if tmp:
+        equip = db.equips.find_one({"ip_str": tmp.get("__loopback__")})
+        return equip
+    return {}
+
 def get_equip_flow(uid, limit=None, dir="o"):
     flows = []
 
@@ -873,40 +778,17 @@ def get_equip_flow(uid, limit=None, dir="o"):
         "_id": 0,
         "bps": 1,
         "bytes": 1,
-        "ctime": 1,
-        "srcAddr": 1,
-        "dstAddr": 1,
-        "nPortIp": 1,
-        "oPortIp": 1}
-
-    def equip_fr_port_ip(portip):
-        '''
-        r = map_portip_router.get(portip)
-        if r:
-            return r.get("uid")
-        return "<404>:%s" % portip
-        '''
-
-        # port_uid -> port
-        tmp = spi.scget("", "ipaddr", portip)
-        print "xxxxxxxxxxxxxxxxxxxxxxxx"
-        print tmp
-        print "xxxxxxxxxxxxxxxxxxxxxxxx"
-        if tmp:
-            equip = db.equips.find_one({"ip_str": tmp.get("__loopback__")})
-            print "equip:", equip
-            return equip
-        return {}
-        '''
-        port = db.ports.find_one({"ip_str": portip})
-        if port:
-            equip = db.equips.find_one({"ip_str": port.get("router")})
-            return equip
-        return {}
-        '''
+        "time.log": 1,
+        "time.last": 1,
+        "time.first": 1,
+        "addr.src": 1,
+        "addr.dst": 1,
+        "port.nexthop": 1,
+        "port.output": 1}
 
     equip = getequip(uid)
     if not equip:
+        klog.e("No such equip, %s" % str(uid))
         return {}
 
     limit = limit or "40"
@@ -916,96 +798,88 @@ def get_equip_flow(uid, limit=None, dir="o"):
 
     orlis = []
     if 'i' in dir:
-        orlis.append({"nLoopback": ip})
+        orlis.append({"loopback.nxt": ip})
     if 'o' in dir:
-        orlis.append({"loopback": ip})
+        orlis.append({"loopback.cur": ip})
 
     match = {"$or": orlis}
 
-    logs = db.logs.find(match).sort(
-        "bps", pymongo.DESCENDING).limit(
-        int(limit))
+    logs = db.logs.find(match).sort("bps", pymongo.DESCENDING).limit(int(limit))
     tmq = time.time()
     for log in logs:
-        bps = log.get("bps")
-        src = log.get("srcAddr")
-        dst = log.get("dstAddr")
+        try:
+            timediff = time.time() - log["time"]["log"]
+            if timediff > conf.DB_LOG_AGE_SKIP:
+                continue
 
-        sportip = log.get("oPortIp")
-        dportip = log.get("nPortIp")
+            bps = log["bps"]
+            src = log["addr"]["src"]
+            dst = log["addr"]["dst"]
 
-        src_equip = equip_fr_port_ip(sportip)
-        dst_equip = equip_fr_port_ip(dportip)
+            sportip = log["port"]["output"]
+            dportip = log["port"]["nexthop"]
 
-        seid = src_equip.get("uid", "<Null>")
-        seip = src_equip.get("ip_str", "<Null>")
-        spip = sportip
-        deid = dst_equip.get("uid", "<Null>")
-        deip = dst_equip.get("ip_str", "<Null>")
-        dpip = dportip
+            src_equip = equip_fr_port_ip(sportip) or equip_fr_port_ip(log["loopback"]["cur"])
+            dst_equip = equip_fr_port_ip(dportip) or equip_fr_port_ip(log["loopback"]["nxt"])
 
-        if ip == log.get("loopback"):
-            direct = "LOOP" if deid == uid else "OUT"
-        else:
-            direct = "IN"
+            seid = src_equip.get("uid", "<Null:output:%s>" % sportip)
+            seip = src_equip.get("ip_str", "<Null:output:%s>" % sportip)
+            spip = sportip
+            deid = dst_equip.get("uid", "<Null:nexthop:%s>" % dportip)
+            deip = dst_equip.get("ip_str", "<Null:nexthop:%s>" % dportip)
+            dpip = dportip
 
-        # XXX: vlink = db.vlinks.find_one({"sportip": sportip, "dportip":
-        # dportip})
-        sloopbackip = src_equip.get("ip_str", "<Null>")
-        dloopbackip = dst_equip.get("ip_str", "<Null>")
+            if ip == log["loopback"]["cur"]:
+                direct = "LOOP" if deid == uid else "OUT"
+            else:
+                direct = "IN"
 
-        vlink = db.vlinks.find_one(
-            {"sloopbackip": sloopbackip, "dloopbackip": dloopbackip})
-        if vlink:
-            vlink_uid = vlink["uid"]
-        else:
-            vlink_uid = "BADVLINK"
+            # XXX: vlink = db.vlinks.find_one({"sportip": sportip, "dportip":
+            # dportip})
+            sloopbackip = src_equip.get("ip_str", "<Null>")
+            dloopbackip = dst_equip.get("ip_str", "<Null>")
 
-        dirdic = {
-            "dir": direct,
-            "from": {
-                "equip_uid": seid,
-                "equip_ip": seip,
-                "port_ip": spip
-            },
-            "to": {
-                "equip_uid": deid,
-                "equip_ip": deip,
-                "port_ip": dpip
+            vlink = db.vlinks.find_one(
+                {"sloopbackip": sloopbackip, "dloopbackip": dloopbackip})
+            vlink_uid = vlink["uid"] if vlink else "<Bad>"
+
+            dirdic = {
+                "dir": direct,
+                "from": {
+                    "equip_uid": seid,
+                    "equip_ip": seip,
+                    "port_ip": spip
+                },
+                "to": {
+                    "equip_uid": deid,
+                    "equip_ip": deip,
+                    "port_ip": dpip
+                }
             }
-        }
 
-        logtime = log.get("ctime")
-        nowtime = datetime.datetime.now()
-        timedic = {
-            "logtime": str(logtime),
-            "nowtime": str(nowtime),
-            "timediff": (nowtime - logtime).total_seconds()
-        }
-        print "ddddddddddddddddddddddddddd"
-        print "ddddddddddddddddddddddddddd"
-        print "ddddddddddddddddddddddddddd"
-        print "ddddddddddddddddddddddddddd"
-        print type(log.get("ctime"))
-        print "ddddddddddddddddddddddddddd"
-        print "ddddddddddddddddddddddddddd"
-        print "ddddddddddddddddddddddddddd"
-        print "ddddddddddddddddddddddddddd"
+            last = log["time"]["last"]
+            first = log["time"]["first"]
 
-        _bps = "{:.3f}G or {:.3f}M or {:.3f}K".format(
-            btog(bps), btom(bps), btok(bps))
-        flow = {
-            "bps": bps,
-            "_bps": _bps,
-            "src": src,
-            "dst": dst,
-            "_dir": dirdic,
-            "_bytes": log.get("bytes"),
-            "_time": timedic,
-            "next_hop_uid": deid,
-            "uid": vlink_uid
-        }
-        flows.append(flow)
+            _bps = "{:.3f}G or {:.3f}M or {:.3f}K".format(
+                btog(bps), btom(bps), btok(bps))
+
+            _flow = "(%s) >>> (%s)@(%s) >>> (%s)@(%s) >>> (%s)" % (src, spip, seip, dpip, deip, dst)
+            flow = {
+                "_flow": _flow,
+                "_bps": _bps,
+                "_dir": dirdic,
+                "_bytes": log["bytes"],
+                "bps": bps,
+                "src": src,
+                "dst": dst,
+                "next_hop_uid": deid,
+                "uid": vlink_uid,
+                "_time": "%d - %d = %d" % (last, first, last - first)
+            }
+            flows.append(flow)
+        except:
+            klog.e(traceback.format_exc())
+            klog.e("BAD LOG: ", varfmt(log, color=True))
 
     tmh = time.time()
     print "cost ...:", (tmh - tmq)
@@ -1018,32 +892,57 @@ def get_vlink_flow(uid):
     show = {
         "_id": 0,
         "bps": 1,
-        "srcAddr": 1,
-        "dstAddr": 1,
-        "nPortIp": 1,
-        "oPortIp": 1}
+        "time.log": 1,
+        "addr.src": 1,
+        "addr.dst": 1
+        }
 
     # vlink.sport, vlink.dport => db.ports.ui
     vlink = getvlink(uid)
-    if vlink:
-        sportip = vlink.get("sportip")
-        dportip = vlink.get("dportip")
+    if not vlink:
+        klog.e("NotFound: vlink: uid:", uid)
+        return []
 
-        next_hop_uid = equip_fr_port_ip(dportip)
+    klog.d(varfmt(vlink, "vlink"))
 
-        match = {"oPortIp": sportip, "nPortIp": dportip}
-        varprt(match, "find vlink")
-        items = db.logs.find(match, show)
-        for i in items:
+    sportip = vlink.get("sportip")
+    dportip = vlink.get("dportip")
+
+    src_equip = equip_fr_port_ip(sportip) or equip_fr_port_ip(vlink["sloopbackip"])
+    dst_equip = equip_fr_port_ip(dportip) or equip_fr_port_ip(vlink["dloopbackip"])
+
+    if not src_equip:
+        klog.e("NotFound: src_equip: sportip:", sportip)
+        return []
+
+    next_hop_uid = dst_equip.get("uid", "<Null>")
+
+    match = {"loopback.cur": src_equip["ip_str"], "port.nexthop": dportip}
+    klog.d(varfmt(match, "db.logs.find: match"))
+    logs = db.logs.find(match, show)
+    for log in logs:
+        try:
+            timediff = time.time() - log["time"]["log"]
+            if timediff > conf.DB_LOG_AGE_SKIP:
+                continue
+
+            _flow = "(%s) >>> (%s)@(%s) >>> (%s)@(%s) >>> (%s)" % (log["addr"]["src"], sportip, src_equip["ip_str"], dportip, dst_equip["ip_str"], log["addr"]["dst"])
             flow = {
-                "bps": i.get("bps"),
-                "src": i.get("srcAddr"),
-                "dst": i.get("dstAddr"),
+                "_flow": _flow,
+
+                "bps": log["bps"],
+                "src": log["addr"]["src"],
+                "dst": log["addr"]["dst"],
                 "uid": uid,
                 "next_hop_uid": next_hop_uid}
             flows.append(flow)
+        except:
+            klog.e(traceback.format_exc())
+            klog.e("BAD LOG: ", varfmt(log, color=True))
+            varprt(match, "find vlink")
 
     return flows
+
 
 
 def ms_flow_get_flow(calldic=None):
@@ -1097,8 +996,8 @@ def ms_flow_get_flow(calldic=None):
     respdic = odic(calldic)
     respdic.result = DotDict()
 
-    vlink_uid = calldic["args"].get("vlink_uid")
-    equip_uid = calldic["args"].get("equip_uid")
+    vlink_uid = calldic.args.vlink_uid
+    equip_uid = calldic.args.equip_uid
 
     if vlink_uid:
         respdic.result.flows = get_vlink_flow(vlink_uid)
@@ -1109,61 +1008,109 @@ def ms_flow_get_flow(calldic=None):
 
 
 spi.update()
-# varprt(spi.portInfos)
 
 
 ### #####################################################################
 # mcon etc
 #
-from roar import CallManager, CmdServer_Socket
-callman = CallManager()
-cmdserv = CmdServer_Socket(callman, 9021)
+from roar.roar import CallManager, CmdServer_Socket
+from roar import roarcmds
+
+callman = CallManager(name="NetFlow")
+cmdserv = CmdServer_Socket(callman, conf.CMDPORT)
 cmdserv.start()
 
+roarcmds.ExtCommands(callman, conf)
 
 @callman.deccmd()
 def objs(cmdctx, calldic):
     '''objs pat'''
 
-    arg = calldic.get_args()
-    pat = arg[0] if arg else None
-
-    if not pat:
-        return spi.portInfos.items()
+    pat = calldic.nth_arg(0, ".*")
+    pat = re.compile(pat)
 
     dic = {}
     for k, v in spi.portInfos.items():
-        if str(k).find(pat) >= 0 or str(v).find(pat) >= 0:
+        if pat.search(str(k)) or pat.search(str(v)):
             dic[k] = v
     return dic
 
 
 @callman.deccmd()
 def flowv(cmdctx, calldic):
-    uid = calldic.get_args[0]
-    return get_vlink_flow(uid)
+    '''Show flow for vlink
+
+    .opt --l limit :100
+
+    .opt --hi bpsMin :9999999999999
+
+    .opt --lo bpsMax :0
+
+    .opt --s searchPat :.*
+
+    .arg uids
+    uid list
+    '''
+
+    limit = int(calldic.nth_opt("l", 0, 100))
+    bpshi = int(calldic.nth_opt("hi", 0, 9999999999999))
+    bpslo = int(calldic.nth_opt("lo", 0, 0))
+
+    uids = calldic.get_args()
+    if not uids:
+        uids = [e.get("uid") for e in db.vlinks.find()]
+
+    pat = calldic.nth_opt("s", 0, ".*")
+    pat = re.compile(pat)
+
+    klog.d(varfmt(uids, "UID List"))
+    res = []
+    for uid in uids:
+        res.extend(get_vlink_flow(uid))
+    res = [f for f in res if pat.search(str(f))]
+    res = sorted(res, lambda x, y: y.get("bps", 0) - x.get("bps", 0))
+    res = filter(lambda x: bpslo <= x.get("bps", 0) <= bpshi, res)
+    return res[:limit]
 
 
 @callman.deccmd()
 def flowe(cmdctx, calldic):
-    '''flowe --u uid --l limit --d dir pat'''
+    '''Show flow for vlink
 
-    opt = calldic.get_opt("u")
-    uid = opt[-1] if opt else "1"
+    .opt --l limit :100
 
-    opt = calldic.get_opt("l")
-    limit = opt[-1] if opt else "100"
+    .opt --hi bpsMin :9999999999999
 
-    opt = calldic.get_opt("d")
-    dir = opt[-1] if opt else "io"
+    .opt --lo bpsMax :0
 
-    arg = calldic.get_args()
-    pat = arg[0] if arg else None
+    .opt --s searchPat :.*
 
-    res = get_equip_flow(uid, limit, dir)
-    if not pat:
-        return res
-    return [f for f in res if (str(f).find(pat) >= 0)]
+    .arg uids
+    uid list
+    '''
+
+
+    uids = calldic.get_args()
+    limit = calldic.nth_opt("l", 0, "100")
+    dir = calldic.nth_opt("d", 0, "io")
+    pat = calldic.nth_opt("s", 0, ".*")
+    bpshi = int(calldic.nth_opt("hi", 0, 9999999999999))
+    bpslo = int(calldic.nth_opt("lo", 0, 0))
+
+    pat = re.compile(pat)
+
+    if not uids:
+        uids = [e.get("uid") for e in db.equips.find()]
+
+    klog.d(varfmt(uids, "UID List"))
+    res = []
+    for uid in uids:
+        res.extend(get_equip_flow(uid, None, dir))
+
+    res = [f for f in res if pat.search(str(f))]
+    res = sorted(res, lambda x, y: y.get("bps", 0) - x.get("bps", 0))
+    res = filter(lambda x: bpslo <= x.get("bps", 0) <= bpshi, res)
+    return res[:int(limit)]
 
 
 @callman.deccmd()
@@ -1171,38 +1118,17 @@ def shortcuts(cmdctx, calldic):
     return spi.shortcuts
 
 
-@callman.deccmd()
-def restart(cmdctx, calldic):
-    '''Quit this script'''
-    def seeya(cookie):
-        time.sleep(1)
-        os._exit(0)
+if __name__ == "__main__":
+    '''
+    lfp = LogFileProcessor(conf)
+    conf.setmonitor(lambda x: lfp.wakeup())
 
-    DeferDo(seeya)
-    return "Bye"
-
-
-def strip_uniq_from_argv():
-    '''The --uniq is used to identify a process.
-
-    a.py --uniq=2837492392994857 argm argn ... argz
-    ps aux | grep "--uniq=2837492392994857" | awk '{print $2}' | xargs kill -9
+    @callman.deccmd()
+    def wakeup(cmdctx, calldic):
+        lfp.wakeup()
+        return "OK"
     '''
 
-    for a in sys.argv:
-        if a.startswith("--uniq="):
-            sys.argv.remove(a)
+    nfp = NFProcessor(conf)
 
-
-if __name__ == "__main__":
-    strip_uniq_from_argv()
-
-    # lfp = LogFileProcessor("../../jnca", "../../jnca/bankup2")
-    #lfp = LogFileProcessor("../../jnca")
-    # lfp = LogFileProcessor("../../jnca", "../../jnca/bankup4")
-    #lfp = LogFileProcessor("../../jnca/bankup3")
-    # lfp = LogFileProcessor("../../jnca")
-    lfp = LogFileProcessor("../../jnca", "../../jnca/bak0906")
-    # lfp = LogFileProcessor("../../jnca/bak0906")
-
-    run(server='paste', host='0.0.0.0', port=10001, debug=True)
+    run(server='paste', host='0.0.0.0', port=conf.BOTTLE_PORT, debug=conf.BOTTLE_DEBUG)

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 #
-#  Copyright 2016 China Telecommunication Co., Ltd.
+#  Copyright 2016-2017 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ class ms_topo_handler(tornado.web.RequestHandler):
         resp['msg'] = ''
         self.set_header('Content-Type', 'application/json')
         return resp
-    
+
     def post(self):
         ctnt = self.request.body
         if self.log == 1:
@@ -78,12 +78,12 @@ class ms_topo_handler(tornado.web.RequestHandler):
     def get_equips(self, arg):
         equips = {}
         rts = []
-        
+
         sql_str = 'select * from t_router inner join t_site on t_router.site_id=t_site.id'
         db = mysql_utils('topology')
         results = db.exec_sql(sql_str)
         db.close()
-        
+
         for result in results:
             one_rt = {}
             one_rt['uid'] = str(result[0])
@@ -95,8 +95,9 @@ class ms_topo_handler(tornado.web.RequestHandler):
             one_rt['x'] = result[7]
             one_rt['y'] = result[8]
             one_rt['ip_str'] = result[4]
+            one_rt['model'] = result[9]
             rts.append(one_rt)
-            
+
         equips['routers'] = rts
         return equips
 
@@ -110,7 +111,7 @@ class ms_topo_handler(tornado.web.RequestHandler):
         db = mysql_utils('topology')
         results = db.exec_sql(sql_str)
         db.close()
-        
+
         for result in results:
             one_port = {}
             one_port['uid'] = str(result[0])
@@ -123,7 +124,7 @@ class ms_topo_handler(tornado.web.RequestHandler):
 
         port['ports'] = ps
         return port
-    
+
     def get_vlinks(self, arg):
         vl = {}
         vls = []
@@ -132,7 +133,7 @@ class ms_topo_handler(tornado.web.RequestHandler):
         db = mysql_utils('topology')
         results = db.exec_sql(sql_str)
         db.close()
-        
+
         for result in results:
             v = {}
             v['uid'] = str(result[0])

@@ -1,3 +1,6 @@
-# rest framework
-tornado==4.4.1
-coverage==4.2
+bottle
+eventfd
+jsonrpc
+pygments
+pyinotify
+pymongo

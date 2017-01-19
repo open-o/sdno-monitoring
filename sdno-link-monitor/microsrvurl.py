@@ -1,5 +1,22 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+#
+#  Copyright 2016-2017 China Telecommunication Co., Ltd.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+
 __author__ = 'liyiqun'
 
 # microsrv_linkstat_url = 'http://127.0.0.1:32769/microsrv/link_stat'
@@ -69,12 +86,19 @@ microsrvurl_dict = {
     'te_lsp_rest_host':'127.0.0.1',
     'te_driver_rest_host':'127.0.0.1',
 
-    'microsrv_linkstat_url': 'http://127.0.0.1:33710/microsrv/link_stat',
-    'microsrv_topo_url': 'http://127.0.0.1:33710/microsrv/topo',
-    'microsrv_cust_url': 'http://127.0.0.1:33710/microsrv/customer',
-    'microsrv_flow_url': 'http://127.0.0.1:33710/microsrv/flow',
-    'microsrv_tunnel_url': 'http://127.0.0.1:33710/microsrv/tunnel',
-    'microsrv_controller_url': 'http://127.0.0.1:33710/microsrv/controller',
+    # 'microsrv_linkstat_url': 'http://127.0.0.1:33710/microsrv/link_stat',
+    # 'microsrv_topo_url': 'http://127.0.0.1:33710
+    # /microsrv/topo',
+    # 'microsrv_cust_url': 'http://127.0.0.1:33710/microsrv/customer',
+    # 'microsrv_flow_url': 'http://127.0.0.1:33710/microsrv/flow',
+    # 'microsrv_tunnel_url': 'http://127.0.0.1:33710/microsrv/tunnel',
+    # 'microsrv_controller_url': 'http://127.0.0.1:33710/microsrv/controller',
+    'microsrv_linkstat_url': 'http://219.142.69.235:10000/link/links',
+    'microsrv_topo_url': 'http://127.0.0.1:33769',
+    'microsrv_cust_url': 'http://127.0.0.1:33771',
+    'microsrv_flow_url': 'http://219.142.69.235:10001/flow',
+    'microsrv_tunnel_url': 'http://127.0.0.1:33772',
+    'microsrv_controller_url': 'http://10.9.63.106:12727/',
 
     'te_topo_man_url': 'http://127.0.0.1:32769',
     'te_flow_man_url': 'http://127.0.0.1:32770',

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 #
-#  Copyright 2016 China Telecommunication Co., Ltd.
+#  Copyright 2016-2017 China Telecommunication Co., Ltd.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -16,31 +16,31 @@
 #  limitations under the License.
 #
 
+import copy
+import datetime
+import os
+import os.path
+import threading
+
+import tornado.gen
 import tornado.httpserver
 import tornado.ioloop
 import tornado.options
-from tornado.options import options
 import tornado.web
-import threading
-import tornado.gen
-from topomodel import *
-from jsonrpc import *
-from test import *
-from topofetch import topo_fetcher
-from microsrvurl import *
-from base_handler import *
+from tornado.options import options
 from tornado_swagger import swagger
-import datetime
+
+from base_handler import *
 from common import *
 from flow_serv import flow_handler
-import os
-import os.path
-import copy
+from test import *
+from topofetch import topo_fetcher
+from topomodel import *
 
 swagger.docs()
 
 
-topo_interval =  1000*1000
+topo_interval =  60*60
 link_interval =  10#500*1000
 
 class fetch_thread(threading.Thread):
@@ -82,18 +82,25 @@ class fetch_thread(threading.Thread):
 
     def set_topo(self):
         'Set the routers data to who requires them. e.g. the controller micro service'
-        # Set equip data to ms_controller. Moved to sync_lsp of lsp_serv.py
+
 
         # Set equip and link data to ms_flow
         rpc = base_rpc(microsrvurl_dict['microsrv_flow_url'])
         args = {}
         args['equips'] = self.fetcher.equips
+        print [x['ip_str'] for x in self.fetcher.equips]
         args['vlinks'] = self.fetcher.simple_vlinks
         rpc.form_request('ms_flow_set_topo', args)
         r = rpc.do_sync_post()
 
         rpc = base_rpc(microsrvurl_dict['microsrv_linkstat_url'])
         rpc.form_request('ms_link_set_links', args)
+        rpc.do_sync_post()
+
+
+        # Set to ms_controller
+        rpc = base_rpc(microsrvurl_dict['microsrv_controller_url'])
+        rpc.form_request('ms_controller_set_equips', args)
         rpc.do_sync_post()
 
         pass
@@ -112,6 +119,8 @@ class fetch_thread(threading.Thread):
         for v in self.fetcher.vlinks:
             v['utilization'] = {}
         for u in r:
+            if 'port_uid' not in u:
+                continue
             pid = u['port_uid']
             if pid not in self.fetcher.vlink_map:
                 continue;
@@ -146,6 +155,8 @@ class fetch_thread(threading.Thread):
 
             vm.set_attrib('sequip', v['sequip']['uid'])
             vm.set_attrib('dequip', v['dequip']['uid'])
+            vm.set_attrib('sequip_name', v['sequip']['name'])
+            vm.set_attrib('dequip_name', v['dequip']['name'])
 
             # aggregate bandwidth usage
             total_bw = float(v['bandwidth'])
@@ -167,28 +178,33 @@ class fetch_thread(threading.Thread):
         last_topo_tm = 0
         last_link_tm = 0
         while(True):
-            time.sleep(3)
+            time.sleep(2)
             tm = int(time.time())
-            if tm - last_topo_tm > topo_interval:
-                self.fetcher.prepare()
-                self.fetcher.fetch_equip()
-                self.fetcher.fetch_port()
-                self.fetcher.fetch_vlink()
-                self.form_equip_model()
-                # self.set_link_list()
-                self.set_topo()
-                self.fetch_link_status()
-                self.form_vlink_model()
-                last_topo_tm = tm
-                last_link_tm = tm
-                self.app.switch_equip()
-                self.app.switch_link()
+            try:
+                if tm - last_topo_tm > topo_interval:
+                    self.fetcher.prepare()
+                    self.fetcher.fetch_equip()
+                    self.fetcher.fetch_port()
+                    self.fetcher.fetch_vlink()
+                    self.form_equip_model()
+                    # self.set_link_list()
+                    self.set_topo()
+                    time.sleep(2)
+                    self.fetch_link_status()
+                    self.form_vlink_model()
+                    last_topo_tm = tm
+                    last_link_tm = tm
+                    self.app.switch_equip()
+                    self.app.switch_link()
 
-            if tm - last_link_tm > link_interval:
-                self.fetch_link_status()
-                self.form_vlink_model()
-                last_link_tm = tm
-                self.app.switch_link()
+                if tm - last_link_tm > link_interval:
+                    self.fetch_link_status()
+                    self.form_vlink_model()
+                    last_link_tm = tm
+                    self.app.switch_link()
+            except Exception, e:
+                print e
+                traceback.print_exc()
 
             pass
         pass
@@ -222,7 +238,15 @@ class topo_handler(base_handler):
 
     def get_vlinks(self, req):
         res = {}
+        equip = None
+        if 'args' in req:
+            req = req['args']
+        if 'equip_uid' in req:
+            equip = req['equip_uid']
+
         vm = self.application.get_active_link()
+        if equip:
+            vm = self.filter_vlink(vm, equip)
         res['vlinks'] = vm
         return res
 
@@ -232,6 +256,17 @@ class topo_handler(base_handler):
         res = {'node_list':em, 'links':vm}
         return res
 
+    def filter_vlink(self, vm, equip):
+        ' Filter vlinks by equipment. output subset of vlinks that start from equip '
+        filtered = []
+        e = str(equip)
+        for v in vm:
+            if v['sequip'] == e:
+                filtered.append(v)
+                pass
+            pass
+        return filtered
+
     @tornado.gen.coroutine
     def update_equip(self,req):
         res = yield self.do_query(microsrvurl_dict['microsrv_topo_url'], 'ms_topo_update_equip', req['args'])
@@ -240,6 +275,8 @@ class topo_handler(base_handler):
     @tornado.gen.coroutine
     def set_link_delay(self, req):
         res = yield self.do_query(microsrvurl_dict['microsrv_topo_url'], 'ms_topo_set_vlink_delay', req['args'])
+        res = yield self.do_query(microsrvurl_dict['microsrv_controller_url'], 'ms_controller_set_vlink_delay', req['args'])
+
         raise tornado.gen.Return(res)
 
 
@@ -391,14 +428,48 @@ class vlink_handler(base_handler):
         self.finish()
         pass
 
+@swagger.model()
+class link(object):
+    """
+        @description:
+            link modle
+        @property links: link uid list
+        @ptype links: C{list} of L{String}
+    """
+    def __init__(self, links):
+        self.links = links
+
+class workflow_topo_handler(base_handler):
+    @tornado.gen.coroutine
+    @swagger.operation(nickname='jam_links')
+    def get(self, threshold):
+        '''
+
+        @param threshold:
+        @type threshold: L{string}
+        @in threshold: path
+        @required threshold: True
+
+        @rtype: L{link}
+        @description: Get all jam link uids with given bandwidth utilization ratio threshold. A link with higher utilization ratio than this value will be regarded as jammed
+        @notes: GET jam_links/{threshold}
+        '''
+        vm = self.application.get_active_link()
+        uids = [v['uid'] for v in vm if float(v['percentage']) > float(threshold)]
+
+        self.write(json.dumps({'links':uids}))
+        self.finish()
+
+        pass
 
 
 
-class topo_app(tornado.web.Application):
+class topo_app(swagger.Application):
     def __init__(self):
 
         handlers = [
-            (r'/', topo_handler)
+            (r'/', topo_handler),
+            (r'/jam_links/(.+)', workflow_topo_handler)
         ]
 
         settings = {
@@ -406,7 +477,8 @@ class topo_app(tornado.web.Application):
             'static_path': 'static'
         }
 
-        tornado.web.Application.__init__(self, handlers, **settings)
+        # tornado.web.Application.__init__(self, handlers, **settings)
+        super(topo_app, self).__init__(handlers, **settings)
 
         self.equip = [None, None]
         self.cur_equip = 0
@@ -416,7 +488,6 @@ class topo_app(tornado.web.Application):
 
         self.fetcher = fetch_thread(self)
         self.fetcher.start()
-
         pass
 
     def switch_equip(self):
@@ -495,10 +566,10 @@ def openo_related_service_query():
     # print('microsrv_controller_url+++:' + microsrv_controller_url)
 
     # microsrv_linkstat_url = 'http://219.141.189.72:10000/link/links'
-    microsrvurl_dict['microsrv_linkstat_url'] = 'http://127.0.0.1:10000/link/links'
+    # microsrvurl_dict['microsrv_linkstat_url'] = 'http://127.0.0.1:10000/link/links'
     # print('microsrv_linkstat_url+++:' + microsrv_linkstat_url)
     # microsrv_flow_url = 'thtp://219.141.189.72:10001/flow'
-    microsrvurl_dict['microsrv_flow_url'] = 'http://127.0.0.1:10001/flow'
+    # microsrvurl_dict['microsrv_flow_url'] = 'http://127.0.0.1:10001/flow'
     # print('microsrv_flow_url+++:' + microsrv_flow_url)
     pass
 
