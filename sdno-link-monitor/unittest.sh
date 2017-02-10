@@ -28,7 +28,6 @@ pip install --upgrade pip
 
 pip install epydoc
 pip install tornado
-pip install dotmap
 pip install bottle
 
 # Download and install the swagger module

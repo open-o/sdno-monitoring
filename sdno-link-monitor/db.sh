@@ -15,4 +15,4 @@
 #  limitations under the License.
 #
 
-mysql -uroot -proot -e "drop database if exists topology; create database topology;source ./db.sql;"
+mysql -uroot -proot -e "drop database if exists topology; create database topology;use topology; source ./db.sql;"

@@ -75,12 +75,6 @@ jnf = functools.partial(logtan.f, mod="Netflow")
 alias = (
         ("CMDPORT", "cmdport", 9021),
 
-        # jnca/log/fr: Where to load jnca log files
-        # jnca/log/to: Where to backup jnca log files
-        ("JNCA_LOG_FR", "jnca/log/fr", "/home/auv/jnca"),
-        ("JNCA_LOG_TO", "jnca/log/to", "/home/auv/jnca/bak/"),
-        ("JNCA_THREAD_WAIT", "jnca/thread/wait", 60),
-
         ("SAMPLE_RATE", "sample/rate", 1000),
 
         # Bottle web service
