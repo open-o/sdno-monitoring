@@ -29,5 +29,11 @@ OPTS+=" --localurl=${SDNO_MONITORING_ADDRESS}"
 ${BASEDIR}/snmp/run.sh
 ${BASEDIR}/netflow/run.sh
 
-nohup python ${BASEDIR}/topo_serv.py ${OPTS} &> /dev/null &
-nohup python ${BASEDIR}/topo_server.py ${OPTS} &> /dev/null &
+if [ "$CSIT" == "True" ]; then 
+    nohup coverage run --parallel-mode ${BASEDIR}/topo_serv.py ${OPTS} &> /dev/null &
+    nohup coverage run --parallel-mode ${BASEDIR}/topo_server.py ${OPTS} &> /dev/null &
+    nohup python ${BASEDIR}/test.py ${OPTS}  &
+else
+    nohup python ${BASEDIR}/topo_serv.py ${OPTS} &> /dev/null &
+    nohup python ${BASEDIR}/topo_server.py ${OPTS} &> /dev/null &
+fi
