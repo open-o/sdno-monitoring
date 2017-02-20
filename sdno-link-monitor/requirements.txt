@@ -1,6 +1,0 @@
-bottle
-eventfd
-jsonrpc
-pygments
-pyinotify
-pymongo

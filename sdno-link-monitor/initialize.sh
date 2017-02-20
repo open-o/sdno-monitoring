@@ -47,6 +47,9 @@ pip install bottle
 pip install paste
 pip install pymongo
 pip install pyinotify
+pip install eventfd
+pip install pygments
+pip install jsonrpc
 
 # Download and install the swagger module
 curl https://github.com/SerenaFeng/tornado-swagger/archive/master.zip -L -o /tmp/swagger.zip 
