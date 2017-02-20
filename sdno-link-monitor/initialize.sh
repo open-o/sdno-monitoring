@@ -42,13 +42,12 @@ pip install --upgrade pip
 
 pip install epydoc
 pip install tornado
-pip install dotmap
 pip install bottle
 pip install paste
 pip install pymongo
 pip install pyinotify
-pip install eventfd
 pip install pygments
+pip install eventfd
 pip install jsonrpc
 
 # Download and install the swagger module
